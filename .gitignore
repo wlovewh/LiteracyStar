@@ -1,0 +1,34 @@
+# 依赖
+node_modules/
+*/node_modules/
+
+# 构建产物
+dist/
+frontend/dist/
+*.local
+
+# 环境变量（含数据库密码与 JWT 密钥，禁止提交）
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# 日志
+logs/
+*.log
+npm-debug.log*
+pm2-*.log
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# 临时文件
+deploy/_*
+*.tar.gz
+
+# 数据库导出
+*.sql.bak
+dump.sql
