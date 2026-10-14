@@ -1632,4 +1632,68 @@ LiteracyStar/
 - 成绩对比：个人环节（星海队 3 分 / 1 人）与团队环节（逐光队 0 分）数据独立，不再相同或为空。
 - 综合平台：九大分类、32 个网站、题库跨库检索 21 题、管理后台统计均正常。
 
+---
+
+## 十五、实施记录（2026-10-14 第二轮）
+
+### 15.1 问题修复对照表
+
+| 编号 | 问题 | 根因 | 修复方式 |
+| --- | --- | --- | --- |
+| ① | 综合平台入口以文字形式暴露 | 登录页与顶栏存在「需要备赛工具？进入综合平台」文案 | 移除全部文字入口；改为点击顶部 SVG 图标跳转，无任何提示（隐藏入口） |
+| ② | 跳转综合平台即可访问全部资源 | 路由未做鉴权，所有模块默认开放 | 为 `/resources`、`/questions`、`/chat` 加 `requiresAuth`，`/admin` 加 `requiresAuth` + `requiresAdmin`；未登录跳回首页并自动弹出密钥登录框，登录后回到目标页 |
+| ③ | 综合平台缺少 favicon | `public/` 目录不存在 | 新增 `public/favicon.svg`，与模拟平台一致 |
+| ④ | 管理后台功能不全 | 仅有分类新增，无网站增删改/图标上传，题库管理整体缺失 | 新增「资源管理」与「题库管理」两个标签页（详见 15.2、15.3） |
+| ⑤ | 查询/重置按钮位置不佳 | 按钮独占一行且贴得近 | 按钮与筛选项并排，靠右对齐；模拟平台三个管理页同步调整 |
+| ⑥ | 实时排行榜始终 0 分、排名不变 | `GREATEST(COALESCE(ss.total_score,0), COALESCE(SUM(a.score_delta),0))`：未交卷时 `ss.total_score` 为 NULL，`COALESCE` 得 0，而 `GREATEST(0, 负数)` 恒为 0，答错一题后分数被永久钉死在 0 | 改为 `CASE WHEN ss.total_score IS NOT NULL THEN ss.total_score ELSE COALESCE(SUM(a.score_delta),0) END`；团队榜在正式成绩为空时回退到 `answers` 实时汇总 |
+
+### 15.2 资源管理（project.md 8.1）
+
+- **分类管理**：新增 / 编辑 / 删除，支持排序与启用状态。
+- **网站增删改**：所属分类、名称、网址、简介、排序、启用状态完整增删改。
+- **图标上传**：`POST /platform-api/resources/icons`（multer 内存存储，限 2MB，仅图片），支持 PNG / JPG / GIF / WEBP / SVG / ICO；文件落盘至 `backend/uploads/icons/`，通过 `/platform-api/uploads/icons/<file>` 静态访问。上传时可携带 `siteId` 直接绑定，也可在网站编辑弹窗内单独上传。
+- **删除图标**：`DELETE /platform-api/resources/icons/:filename`，含路径穿越防护。
+
+### 15.3 题库管理（project.md 8.1）
+
+与模拟竞赛平台共用 `info_literacy.questions` 表，写操作通过跨库限定名执行，双方即时同步（已实测双向验证）。
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET /platform-api/questions/manage/template` | 导入模板（14 列表头 + 2 行示例） |
+| `POST /platform-api/questions/manage` | 新增题目（题干查重） |
+| `PUT /platform-api/questions/manage/:id` | 编辑题目 |
+| `DELETE /platform-api/questions/manage/:id` | 删除题目 |
+| `POST /platform-api/questions/manage/batch-remove` | 批量删除 |
+| `POST /platform-api/questions/manage/import` | 批量导入，支持 CSV / Excel 文件或 JSON 行数组 |
+
+导入特性：逐行校验，单行失败不中断整批；返回 `{ total, inserted, skipped, failed, errors[] }`，错误明细含行号（最多 20 条）；可勾选跳过题干重复项。
+
+### 15.4 本轮修复的两个隐蔽缺陷
+
+| 缺陷 | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 跨库 SQL 重复限定 | `DELETE ... FROM info_literacy.info_literacy.questions` 语法错误 | `queryCompetition` 用正则全局替换 `questions`，对已限定的 SQL 再次加前缀 | 新增 `qualifyQuestions()`，用负向后顾断言跳过已带库名前缀的情况，保证幂等 |
+| `insertId` 为 undefined | 新增题目报「Bind parameters must not contain undefined」 | `pool.execute()` 返回 `[result, fields]` 元组，直接取 `res.insertId` 得到 undefined | 新增 `db.executeCompetition()` 统一解包元组，服务层 5 处调用全部替换 |
+
+### 15.5 验证结果
+
+| 测试项 | 结果 |
+| --- | --- |
+| `test-logic.js` 核心逻辑 | 28 / 28 通过 |
+| `audit-spec.js` 规格审计 | 68 / 68 通过 |
+| 模拟平台 `smoke-test.js` | 43 / 43 通过 |
+| 综合平台 `smoke-test.js` | 31 / 31 通过 |
+| 综合平台 `ws-test.js` WebSocket | 9 / 9 通过 |
+| 综合平台 `admin-test.js` 管理端（新增） | 15 / 15 通过 |
+| 公网六项问题验证 | 24 / 24 通过 |
+
+关键功能实测（服务器生产环境）：
+
+- **实时排行榜（⑥）**：逐题提交正确答案，榜单分数实测序列 `2 → 4 → 6 → 8 → 10 → 12 → 14 → 13 → 15 → 17`（第 8 题答错扣 1 分），每题提交后立即变化，无需交卷。排名交换实测：张伟答 3 题得 6 分列第 1，刘洋答 6 题得 12 分后反超至第 1，张伟退至第 2。
+- **题库双向同步（④）**：综合平台新增题目后，模拟竞赛平台立即可见且选项一致；模拟平台修改难度后，综合平台读取到新值；综合平台删除后，模拟平台同步消失。
+- **图标上传（④）**：上传后返回 `/platform-api/uploads/icons/<file>`，公网访问 200，并正确绑定到目标网站记录。
+- **未登录鉴权（②）**：未登录访问 `/platform-api/auth/keys`、`POST /platform-api/questions/manage` 均返回 401；资源与分类接口仅返回启用项。
+- **隐藏入口（①）**：登录页 HTML 中已不含「需要备赛工具」与「进入综合平台」文案。
+
 **文档结束。**
