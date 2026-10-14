@@ -820,3 +820,816 @@ https://github.com/wlovewh/LiteracyStar.git
 ---
 
 **文档结束。**
+
+# 信息素养大赛综合平台 — 追加设计文档
+
+> 本文档为追加设计文档，仅包含综合平台的新增内容，不重复模拟竞赛平台已有内容。综合平台与模拟竞赛平台各自独立运行，仅题库数据双向同步。
+
+
+## 一、本轮确认清单
+
+| 编号 | 确认内容 |
+|---|---|
+| 1 | 无密钥队员身份持久化：B方案（localStorage记住） |
+| 2 | 有密钥队员身份识别：A方案（自动从队伍信息读取） |
+| 3 | 聊天记录删除粒度：C方案（可删单条+可清空整个聊天室） |
+| 4 | 题目快速检索关键词提取：C方案（连续中文片段，长度>4，去重取前3） |
+| 5 | 一键分享目标选择：相结合（多个聊天室才弹选择框，否则直接发送） |
+| 6 | 快速短语：已确认，且后台允许管理员增删改 |
+| 7 | 消息搜索范围：B方案（当前聊天室全部未过期消息，过期不可搜） |
+| 8 | 聊天记录默认保留时间：30天（可配置为7/15/30/永久） |
+| 9 | 题目去重相似度阈值：80% |
+| 10 | 计时器：正计时（从0往上走），支持开始/暂停/结束/重置 |
+| 11 | 采纳功能：答案提交卡片、计时器、在线状态、消息引用回复、题目去重提示 |
+| 12 | 暂不采纳：题目收藏夹（后续需要再追加）、聊天室快捷跳转 |
+
+
+## 二、综合平台概述
+
+### 2.1 与模拟竞赛平台的关系
+
+综合平台与模拟竞赛平台**各自独立运行**，拥有独立的前端、后端、数据库表结构和管理端。两者仅共享 `questions` 题库表（双向同步），其余数据互不继承。
+
+**入口**：模拟竞赛平台登录页的图标（SVG）点击后，跳转到综合平台的密钥输入页。
+
+### 2.2 用户角色
+
+| 角色 | 进入方式 | 权限 |
+|---|---|---|
+| 管理员 | 管理员密钥 | 管理端全部功能 |
+| 用户（有密钥） | 用户密钥 | 资源收录、题库检索、聊天室 |
+| 用户（无密钥） | 首页邀请码 | 仅聊天室（需先设置姓名/学号） |
+
+### 2.3 首页布局
+
+首页分为**两个独立区域**：
+
+**区域一：访问密钥登录**
+- 输入框 + “访问”按钮
+- 验证成功后跳转到对应界面（管理员端或用户端）
+
+**区域二：加入聊天室**
+- 输入框（6位邀请码）+ “加入”按钮
+- 无密钥用户输入邀请码后，进入聊天室，首次需设置姓名/学号
+- 有密钥用户登录后，也可在此输入邀请码加入其他队伍的聊天室（如被邀请）
+
+
+## 三、系统架构与部署调整
+
+### 3.1 内存分配调整（基于实际服务器1613MB）
+
+| 服务 | 原方案 | 调整后 | 说明 |
+|---|---|---|---|
+| MySQL | 512MB | **128MB** | `innodb_buffer_pool_size=128M` |
+| Redis | 128MB | **64MB** | `maxmemory 64mb`，策略 `allkeys-lru` |
+| Node.js（模拟竞赛） | 512MB | **384MB** | PM2 `max_memory_restart: 384M` |
+| Node.js（综合平台） | 256MB | **256MB** | 含WebSocket服务 |
+| Nginx | 64MB | **64MB** | 静态文件+反向代理 |
+| 系统预留 | 800MB | **约717MB** | 操作系统+SSH+其他 |
+| **合计** | 2016MB | **1613MB** | 匹配服务器实际内存 |
+| **Swap** | 无 | **1-2GB** | 兜底，防止OOM |
+
+**Swap配置命令**（部署时执行）：
+
+```bash
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+**注意**：两个Node.js进程合计640MB，加上MySQL和Redis，内存压力较大。如果实际运行中频繁触发swap，建议将综合平台的WebSocket服务与主API合并为同一进程，或进一步降低Node限制。
+
+### 3.2 新增技术依赖
+
+| 依赖 | 用途 |
+|---|---|
+| `ws` 或 `socket.io` | WebSocket服务，聊天室实时通信 |
+| `ioredis` | Redis Pub/Sub消息广播 |
+| `multer` | 网站图标上传 |
+| `axios` | 获取网站favicon |
+
+### 3.3 Nginx路由配置
+
+```nginx
+# 模拟竞赛平台
+location / {
+    root /var/www/competition/dist;
+    try_files $uri $uri/ /index.html;
+}
+
+# 综合平台
+location /platform {
+    root /var/www/platform/dist;
+    try_files $uri $uri/ /index.html;
+}
+
+# 综合平台API
+location /platform-api {
+    proxy_pass http://localhost:3001;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection 'upgrade';
+}
+
+# WebSocket
+location /ws {
+    proxy_pass http://localhost:3001;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+```
+
+**PM2进程**：综合平台后端使用独立进程，端口3001，内存限制256MB。
+
+
+## 四、访问密钥与登录机制
+
+### 4.1 密钥类型
+
+| 密钥类型 | 权限 | 访问范围 |
+|---|---|---|
+| 管理员密钥 | 管理端全部功能 | 资源管理、题库管理、密钥管理、聊天室管理、数据统计 |
+| 用户密钥 | 仅用户端功能 | 资源浏览、题库检索、聊天室 |
+
+### 4.2 密钥管理
+
+管理员可在后台创建/编辑/删除密钥。密钥字段：
+- 密钥值（自定义或随机生成）
+- 权限类型（管理员/用户）
+- 备注
+- 有效期（可选，NULL=永久）
+- 状态（启用/禁用）
+
+**支持修改密钥权限**：将用户密钥升级为管理员密钥，或反之。
+
+### 4.3 登录流程
+
+1. 用户在综合平台首页输入密钥
+2. 系统验证密钥有效性及权限类型
+3. 验证通过后，跳转到对应界面（管理员端或用户端）
+
+
+## 五、资源收录功能
+
+### 5.1 分类设计（预置九大分类，管理员可自定义增删改）
+
+**分类1：学术信息资源**
+| 网站名称 | 网址 | 简短介绍 |
+|---|---|---|
+| 中国知网（CNKI） | https://www.cnki.net/ | 中文期刊、学位论文、会议论文检索 |
+| 万方数据知识服务平台 | https://www.wanfangdata.com.cn/ | 学术期刊、学位论文、专利标准 |
+| 维普中文期刊服务平台 | http://qikan.cqvip.com/ | 中文科技期刊全文检索 |
+| 读秀学术搜索 | https://www.duxiu.com/ | 图书全文检索与文献传递 |
+| 国家哲学社会科学文献中心 | http://www.ncpssd.org/ | 哲学社科文献免费开放获取 |
+
+**分类2：政府开放信息资源**
+| 网站名称 | 网址 | 简短介绍 |
+|---|---|---|
+| 中华人民共和国中央人民政府 | http://www.gov.cn/ | 国务院政策文件与政务信息 |
+| 国家统计局 | http://www.stats.gov.cn/ | 国家统计数据查询 |
+| 国家知识产权局 | https://www.cnipa.gov.cn/ | 专利检索与知识产权信息 |
+| 国家标准全文公开系统 | https://openstd.samr.gov.cn/ | 国家标准全文在线阅读 |
+| 中国互联网络信息中心（CNNIC） | http://www.cnnic.net.cn/ | 互联网发展统计报告 |
+
+**分类3：信息检索系统**
+| 网站名称 | 网址 | 简短介绍 |
+|---|---|---|
+| FULink文献提供系统 | https://www.fulink.edu.cn/ | 福建省高校数字图书馆一站式检索 |
+| CALIS中国高等教育文献保障系统 | http://www.calis.edu.cn/ | 全国高校文献资源共建共享 |
+| NSTL国家科技图书文献中心 | https://www.nstl.gov.cn/ | 国家科技文献资源保障平台 |
+| CASHL开世览文 | http://www.cashl.edu.cn/ | 高校人文社科文献中心 |
+
+**分类4：信息检索理论与技术**
+| 网站名称 | 网址 | 简短介绍 |
+|---|---|---|
+| 高校信息素养教育数据库 | https://suyang.zxhnzq.com/ | 检索技术微视频案例教学 |
+| 信息素养大赛学练测平台 | https://xlc.xxsuyang.com/ | 学练测评一站式备赛平台 |
+
+**分类5：实用学习资源**
+| 网站名称 | 网址 | 简短介绍 |
+|---|---|---|
+| 中国大学MOOC | https://www.icourse163.org/ | 高校课程在线学习平台 |
+| 学堂在线 | https://www.xuetangx.com/ | 清华大学慕课平台 |
+| 国家职业教育智慧教育平台 | https://vocational.smartedu.cn/ | 职业教育数字资源 |
+| 网易公开课 | https://open.163.com/ | 国内外名校公开课 |
+
+**分类6：AI素养与工具**
+| 网站名称 | 网址 | 简短介绍 |
+|---|---|---|
+| AI素养与技能提升数据库 | https://ai.xxsuyang.com/ | AI常识、提示词、智能体学习 |
+| DeepSeek | https://www.deepseek.com/ | 国产大模型对话与推理 |
+| 豆包 | https://www.doubao.com/ | 字节跳动AI对话助手 |
+| 腾讯元宝 | https://yuanbao.tencent.com/ | 腾讯AI对话与搜索助手 |
+
+**分类7：科研工具与知识管理**
+| 网站名称 | 网址 | 简短介绍 |
+|---|---|---|
+| 知网研学 | https://x.cnki.net/ | 文献管理与笔记工具 |
+| 万方智研平台 | https://zhiyan.wanfangdata.com.cn/ | AI辅助科研全流程平台 |
+| 悟空科研 | https://www.wukongkeyan.com/ | AI辅助阅读与写作平台 |
+
+**分类8：学术写作与规范**
+| 网站名称 | 网址 | 简短介绍 |
+|---|---|---|
+| 中国裁判文书网 | https://wenshu.court.gov.cn/ | 司法文书检索与学术引用 |
+| 国家法律法规数据库 | https://flk.npc.gov.cn/ | 法律法规查询与引用 |
+| 中国互联网联合辟谣平台 | http://www.piyao.org.cn/ | 信息真伪核验工具 |
+
+**分类9：数据工具与商业信息**
+| 网站名称 | 网址 | 简短介绍 |
+|---|---|---|
+| 天眼查 | https://www.tianyancha.com/ | 企业信息与商业数据查询 |
+| 国家企业信用信息公示系统 | https://www.gsxt.gov.cn/ | 企业信用信息查询 |
+
+### 5.2 图标获取规则
+
+优先级从高到低：
+1. 管理员手动上传的图标
+2. 后端通过 `https://www.google.com/s2/favicons?domain={domain}&sz=64` 自动获取
+3. 获取失败时，默认使用**网站名称的第一个字**作为文字图标（浅蓝灰背景 + 深蓝色文字，圆角正方形）
+
+### 5.3 前端展示
+
+**页面布局**：
+- 顶部：综合平台名称 + 搜索框（可搜索网站名称/介绍）
+- 左侧：竖向分类列表（可折叠）
+- 右侧：网站卡片网格
+
+**网站卡片**：
+- 圆角矩形（12px圆角）
+- 左侧正方形图标区（64x64px，圆角8px）
+- 右侧上方标题（16px，深灰#2C3E50，600字重）
+- 右侧下方介绍（12px，中灰#7F8C8D）
+- 卡片悬停：边框变为中蓝（#2B5EA7），轻微上浮阴影
+- 点击卡片：在新标签页打开网站
+
+### 5.4 管理端功能
+
+- 分类管理：新增/编辑/删除/排序分类
+- 网站管理：在指定分类下新增/编辑/删除网站条目
+- 网站字段：名称、网址、简短介绍、图标（上传或自动获取）、排序序号、是否启用
+
+
+## 六、题库检索功能
+
+### 6.1 数据来源
+
+与模拟竞赛平台**共用同一个 `questions` 表**，双向实时同步。在综合平台管理端添加的题目，模拟竞赛平台立即可用；反之亦然。
+
+### 6.2 检索功能
+
+**检索维度**：
+- 精确匹配：按题目ID精确查找；按题干全文精确匹配
+- 模糊匹配：按题干关键词模糊搜索（`LIKE '%关键词%'`）；按知识模块、题型、难度、标签筛选
+
+**检索结果展示**：
+- 表格显示：ID、题型、题干（完整）、选项、正确答案、解析、知识模块、难度
+- 支持分页（每页20条）
+- 支持导出检索结果为CSV
+
+### 6.3 权限控制
+
+- 通过邀请码进入聊天室的用户**也可以使用题库检索功能**
+- 此功能由管理员在后台**开关控制**，可随时开启或关闭
+- 开放时，无密钥用户登录聊天室后，顶部导航栏显示“题库检索”入口
+
+### 6.4 一键分享题目到聊天室
+
+在题库检索页，每道题旁边增加“分享到聊天室”按钮：
+- 如果用户**只有一个聊天室**（本队聊天室），直接发送
+- 如果用户**有多个聊天室**（如被邀请加入其他队伍），弹出选择框选择目标聊天室
+- 发送后，聊天室中显示题目卡片
+
+
+## 七、网页聊天功能
+
+### 7.1 技术架构
+
+```
+┌──────────┐     WebSocket      ┌──────────────┐
+│  队长端   │ ◄────────────────► │              │
+└──────────┘                    │  Node.js     │
+                                │  WebSocket   │
+┌──────────┐     WebSocket      │  Server      │
+│  队员1端  │ ◄────────────────► │              │
+└──────────┘                    │  + Redis     │
+                                │  Pub/Sub     │
+┌──────────┐     WebSocket      │              │
+│  队员2端  │ ◄────────────────► │              │
+└──────────┘                    └──────────────┘
+```
+
+**消息流程**：
+1. 发送方通过WebSocket发送消息到服务端
+2. 服务端将消息发布到Redis频道（`chat:room:{roomId}`）
+3. 所有订阅了该频道的客户端收到消息
+4. 服务端将消息持久化到数据库
+
+### 7.2 聊天室设计
+
+**房间规则**：
+- 每个队伍一个独立聊天室，房间ID = 队伍ID
+- 默认最多**3人**（队长+2队员），**后台可修改最大人数**
+- 队长登录综合平台后，自动进入本队聊天室
+- 队员通过邀请码加入聊天室
+
+**邀请码机制**：
+- 队长在聊天界面点击“生成邀请码”，系统生成6位数字邀请码
+- 邀请码有效期：24小时（可续期）
+- 队员在综合平台首页输入邀请码后加入聊天室
+
+**两种进入路径**：
+1. **有密钥的队员**：登录综合平台后，在首页“加入聊天室”区域输入邀请码，或直接在聊天室界面输入邀请码。身份自动从队伍信息读取（显示为“已登录”状态）。
+2. **无密钥的队员**：直接从首页输入邀请码加入，首次需设置姓名/学号。身份通过**localStorage记住**，下次进入同一聊天室自动识别。
+
+### 7.3 消息类型
+
+| 类型 | 说明 | 显示样式 |
+|---|---|---|
+| `text` | 普通文本消息 | 气泡，左右区分发送者 |
+| `question` | 题目内容（队长发送） | 卡片样式，含题干和选项 |
+| `answer` | 答案提交卡片 | 高亮气泡，带“答案”标签 |
+| `system` | 系统消息 | 居中小字灰色 |
+
+### 7.4 答案提交卡片
+
+队员在聊天室点击“提交答案”按钮后：
+1. 弹出选项选择器（A/B/C/D/多选）
+2. 队员选择后发送一条格式化的答案卡片
+3. 卡片显示：题目ID、所选答案、提交者
+4. **答案冲突提示**：如果两名队员提交的答案不一致，系统在聊天室中发送一条系统消息：“答案冲突：队员1选A，队员2选B，请队长确认”
+
+### 7.5 题目快速检索按钮
+
+队长发送题目后，题目卡片上自动显示“检索本题”按钮：
+- 点击后，系统自动提取题干中的**连续中文片段（长度>4个字）** ，去重后取前3个作为关键词
+- 跳转到题库检索页（**新标签页打开**，不打断聊天流程）
+- 自动填入提取的关键词并执行搜索
+
+### 7.6 快速短语
+
+聊天室输入框上方预设快速短语按钮，管理员可在后台**增删改**：
+
+```
+这题选A
+这题选B
+这题选C
+这题选D
+我查到选A
+我查到选B
+确定选C
+稍等，正在查
+查到了，发你
+这题不会
+```
+
+### 7.7 消息引用回复
+
+队员可以点击某条消息右侧的“引用”图标：
+- 输入框上方显示被引用的消息
+- 发送后显示为引用卡片
+- 形成清晰的问答对应关系
+
+### 7.8 题目去重提示
+
+当队长发送的题目在聊天室历史消息中已经出现过（**题干相似度>80%**），系统自动提示：“此题之前出现过，是否需要查看历史讨论？”
+
+相似度算法：使用简单的文本相似度算法（如Jaccard相似度或Levenshtein距离）。
+
+### 7.9 计时器
+
+聊天室顶部显示一个**小小的圆角矩形**计时器：
+- 正计时（从0往上走）
+- 支持开始、暂停、结束、重置
+- 仅作为辅助工具，不影响正式比赛
+
+### 7.10 成员在线状态
+
+成员列表中，每位成员的姓名旁显示一个小圆点：
+- 蓝色（#2B5EA7）：在线
+- 灰色（#B0BEC5）：离线
+
+**心跳机制**：WebSocket每30秒发送一次心跳，超过60秒无心跳标记为离线。
+
+### 7.11 消息搜索
+
+- 搜索范围：**当前聊天室的所有未过期消息**（过期消息不可搜索）
+- 搜索维度：按关键词搜索消息内容
+- 搜索结果：显示消息列表，点击可跳转到该消息在聊天记录中的位置
+
+### 7.12 消息持久化与保留
+
+- 所有消息写入 `chat_messages` 表
+- 默认保留时间：**30天**（后台可配置为7天/15天/30天/永久）
+- 队员断线重连后，通过REST API拉取最近50条消息
+- **删除功能**：
+  - 管理员可删除单条消息
+  - 管理员可清空整个聊天室的消息
+
+### 7.13 前端界面
+
+**布局**：
+- 左侧：聊天室成员列表（显示在线状态）
+- 中间：消息列表（按时间倒序，最新消息在底部）
+- 顶部：计时器 + 消息搜索框
+- 底部：输入框 + 发送按钮 + 快速短语 + “发送题目”按钮
+
+**消息气泡**：
+- 自己发送的消息：右对齐，浅蓝灰背景（#E8EEF5），深蓝文字
+- 他人发送的消息：左对齐，白色背景，灰色边框
+- 题目卡片：全宽卡片，包含题干和选项，右上角有“检索本题”按钮
+- 答案卡片：高亮气泡，带“答案”标签
+
+
+## 八、管理端设计
+
+### 8.1 管理端功能清单
+
+| 功能 | 说明 |
+|---|---|
+| 密钥管理 | 创建/编辑/删除密钥，设置权限和有效期 |
+| 资源管理 | 分类管理、网站增删改、图标上传 |
+| 题库管理 | 与模拟竞赛平台共享题库，支持完整的增删改查和批量导入 |
+| 聊天室管理 | 修改最大人数、配置保留时间、删除单条消息、清空聊天室 |
+| 快速短语管理 | 增删改快速短语 |
+| 数据统计 | 资源访问次数、题库检索次数、聊天消息量 |
+
+### 8.2 聊天室管理详情
+
+- **最大人数修改**：管理员可修改每个聊天室的最大人数（默认3人）
+- **保留时间配置**：可设置为7天/15天/30天/永久
+- **消息删除**：可删除单条消息
+- **聊天室清空**：可清空整个聊天室的消息
+
+
+## 九、用户端设计
+
+### 9.1 页面结构
+
+| 页面 | 路径 | 说明 |
+|---|---|---|
+| 首页 | `/platform` | 两个区域：密钥登录 + 加入聊天室 |
+| 资源收录页 | `/platform/resources` | 九大分类的网站卡片展示 |
+| 题库检索页 | `/platform/questions` | 题目检索与浏览 |
+| 聊天室页 | `/platform/chat` | 实时聊天界面 |
+| 管理员登录页 | `/platform/admin` | 管理员密钥登录 |
+
+### 9.2 导航设计
+
+顶部导航栏（白色背景，底部浅灰边框）：
+- 左侧：平台名称“信息素养大赛综合平台”
+- 右侧：资源收录、题库检索、聊天室、退出登录
+
+导航栏高度：56px，选中项底部显示2px中蓝下划线。
+
+
+## 十、UI/UX 设计规范（追加）
+
+### 10.1 继承模拟竞赛平台的设计规范
+
+- 主基调：白色（#FFFFFF）
+- 辅助背景：浅灰（#F5F7FA）
+- 主强调色：深蓝（#1A3A5C）
+- 次强调色：中蓝（#2B5EA7）
+- 选中态/标签：浅蓝灰（#E8EEF5）
+- 文字主色：深灰（#2C3E50）
+- 文字次色：中灰（#7F8C8D）
+- 边框色：浅灰（#E0E6ED）
+- 危险色：红色（#E74C3C）
+- 圆角：卡片12px、按钮8px、输入框6px
+- 禁止使用绿色系、禁止emoji、禁止深色背景
+
+### 10.2 聊天室特有样式
+
+- 消息列表背景：浅灰（#F5F7FA）
+- 消息气泡圆角：12px（左上角/右上角根据发送者方向调整）
+- 消息时间戳：12px，中灰，显示在气泡下方
+- 在线状态指示：小圆点，在线为蓝色（#2B5EA7），离线为灰色（#B0BEC5）
+- 计时器：圆角矩形（8px圆角），浅蓝灰背景（#E8EEF5），深蓝文字
+
+### 10.3 底部版权
+
+每个页面底部固定显示：
+
+```
+© 2026 空城星梦筏 · All Rights Reserved
+```
+
+
+## 十一、数据库新增表
+
+### 11.1 access_keys（访问密钥表）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | INT PK AUTO_INCREMENT | 主键 |
+| key_value | VARCHAR(64) UNIQUE | 密钥值 |
+| key_type | TINYINT | 1=管理员 2=用户 |
+| remark | VARCHAR(200) | 备注 |
+| expires_at | DATETIME | 有效期（NULL=永久） |
+| status | TINYINT | 0=禁用 1=启用 |
+| created_at | DATETIME | 创建时间 |
+
+### 11.2 resource_categories（资源分类表）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | INT PK AUTO_INCREMENT | 主键 |
+| name | VARCHAR(50) | 分类名称 |
+| sort_order | INT | 排序 |
+| status | TINYINT | 0=禁用 1=启用 |
+
+### 11.3 resource_sites（资源网站表）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | INT PK AUTO_INCREMENT | 主键 |
+| category_id | INT FK | 所属分类 |
+| name | VARCHAR(100) | 网站名称 |
+| url | VARCHAR(500) | 网址 |
+| description | VARCHAR(200) | 简短介绍 |
+| icon_url | VARCHAR(500) | 图标URL |
+| sort_order | INT | 排序 |
+| status | TINYINT | 0=禁用 1=启用 |
+| created_at | DATETIME | 创建时间 |
+
+### 11.4 chat_rooms（聊天室表）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | INT PK AUTO_INCREMENT | 主键 |
+| team_id | INT | 关联队伍ID |
+| invite_code | VARCHAR(6) UNIQUE | 邀请码 |
+| invite_expires_at | DATETIME | 邀请码有效期 |
+| max_members | INT | 最大人数（默认3） |
+| retention_days | INT | 消息保留天数（默认30，0=永久） |
+| created_at | DATETIME | 创建时间 |
+
+### 11.5 chat_messages（聊天消息表）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK AUTO_INCREMENT | 主键 |
+| room_id | INT FK | 聊天室ID |
+| sender_role | VARCHAR(20) | leader/member1/member2 |
+| sender_name | VARCHAR(50) | 发送者姓名 |
+| message_type | VARCHAR(20) | text/question/answer/system |
+| content | TEXT | 消息内容 |
+| quoted_message_id | BIGINT | 引用的消息ID（可空） |
+| created_at | DATETIME | 发送时间 |
+
+### 11.6 quick_phrases（快速短语表）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | INT PK AUTO_INCREMENT | 主键 |
+| content | VARCHAR(100) | 短语内容 |
+| sort_order | INT | 排序 |
+| status | TINYINT | 0=禁用 1=启用 |
+
+
+## 十二、部署说明（追加）
+
+### 12.1 部署步骤
+
+1. SSH免密登录服务器
+2. 安装 Node.js 20、MySQL 8.0、Redis、Nginx、PM2
+3. 创建数据库，导入 `init.sql`
+4. 配置Swap（1-2GB）
+5. 调整MySQL buffer pool至128M
+6. 调整Redis maxmemory至64M
+7. 上传模拟竞赛平台代码，配置PM2，启动
+8. 上传综合平台代码，配置PM2，启动
+9. 配置Nginx反向代理
+10. 绑定域名（用户自有域名，托管于Cloudflare）
+11. 验证访问
+
+### 12.2 PM2配置
+
+**模拟竞赛平台**：
+```javascript
+module.exports = {
+  apps: [{
+    name: 'competition-api',
+    script: './src/app.js',
+    instances: 1,
+    max_memory_restart: '384M',
+    env: { NODE_ENV: 'production', PORT: 3000 }
+  }]
+};
+```
+
+**综合平台**：
+```javascript
+module.exports = {
+  apps: [{
+    name: 'platform-api',
+    script: './src/app.js',
+    instances: 1,
+    max_memory_restart: '256M',
+    env: { NODE_ENV: 'production', PORT: 3001 }
+  }]
+};
+```
+
+### 12.3 环境变量
+
+**综合平台**：
+```env
+PORT=3001
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=your_password
+DB_NAME=info_literacy
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=
+JWT_SECRET=your_jwt_secret
+```
+
+## 十三、项目目录重构方案
+
+### 13.1 重构目标
+
+原有模拟竞赛平台的项目文件目前直接位于项目根目录下（如 `frontend/`、`backend/`、`database/` 等）。为清晰区分两个独立平台，需将原模拟平台整体移入 `competition-platform/` 目录，新综合平台放入 `integrated-platform/` 目录，形成并列结构。
+
+### 13.2 推荐目录结构
+
+```
+项目根目录/
+├── competition-platform/           # 原模拟竞赛平台（整体移入）
+│   ├── frontend/
+│   ├── backend/
+│   ├── database/
+│   ├── deploy/
+│   └── README.md
+│
+├── integrated-platform/            # 新综合平台（全新项目）
+│   ├── frontend/
+│   ├── backend/
+│   ├── database/
+│   ├── deploy/
+│   └── README.md
+│
+└── README.md                       # 项目总说明（可选）
+```
+
+### 13.3 需要同步调整的引用
+
+将原模拟平台移入 `competition-platform/` 后，以下配置需对应修改：
+
+| 位置 | 原内容 | 调整后 |
+|---|---|---|
+| PM2 配置文件 | `script: './src/app.js'` | 路径不变（在 `competition-platform/backend/` 下执行），但 PM2 启动时需 `cd competition-platform/backend` |
+| Nginx 配置 | `root /var/www/frontend/dist;` | `root /var/www/competition-platform/frontend/dist;` |
+| 后端 `.env` | 数据库连接、端口等 | 路径不变，但需确保从新目录执行 |
+| 部署脚本 | 文件路径 | 更新为 `competition-platform/backend` 等新路径 |
+| 前端构建输出 | `dist/` | 路径不变，但部署时复制到 `/var/www/competition-platform/frontend/dist` |
+| 数据库初始化脚本 | `database/init.sql` | 移入 `competition-platform/database/init.sql` |
+
+**注意**：如果原有代码中使用相对路径（如 `./src/app.js`、`../database/init.sql`），只要保持项目内部相对关系不变，则无需修改代码；仅需调整外部部署脚本和 Nginx 路径。
+
+### 13.4 服务器部署路径建议
+
+```
+/var/www/
+├── competition-platform/           # 模拟平台前端构建产物
+│   └── frontend/dist/
+├── integrated-platform/            # 综合平台前端构建产物
+│   └── frontend/dist/
+└── ...
+```
+
+PM2 进程分别从各自后端目录启动：
+
+```bash
+# 模拟竞赛平台
+cd /var/www/competition-platform/backend
+pm2 start ecosystem.config.js
+
+# 综合平台
+cd /var/www/integrated-platform/backend
+pm2 start ecosystem.config.js
+```
+
+Nginx 按路径区分：
+
+```nginx
+# 模拟竞赛平台（根路径）
+location / {
+    root /var/www/competition-platform/frontend/dist;
+    try_files $uri $uri/ /index.html;
+}
+
+# 综合平台（/platform 路径）
+location /platform {
+    root /var/www/integrated-platform/frontend/dist;
+    try_files $uri $uri/ /index.html;
+}
+```
+
+### 13.5 迁移操作步骤
+
+1. 停止原模拟平台所有 PM2 进程：`pm2 stop competition-api`
+2. 在项目根目录创建 `competition-platform/` 文件夹
+3. 将原有 `frontend/`、`backend/`、`database/`、`deploy/` 等整体移入 `competition-platform/`
+4. 更新部署脚本、Nginx 配置、PM2 启动路径中的目录引用
+5. 重新启动模拟平台，验证功能正常
+6. 新建 `integrated-platform/` 目录，按追加文档开发综合平台
+7. 部署综合平台，配置独立的 PM2 进程和 Nginx 路由
+
+### 13.6 综合平台独立性的再次强调
+
+综合平台是**全新项目**，不在原模拟平台目录内新增文件。它拥有独立的前端、后端、管理端和数据库表结构，仅通过共用 `questions` 表与模拟平台实现题库双向同步。两个平台并列部署，互不干扰。
+
+---
+
+## 十四、实施记录（2026-10-14）
+
+### 14.1 目录重构执行结果
+
+按第十三章方案完成重构，项目根目录现为：
+
+```
+LiteracyStar/
+├── project.md
+├── README.md
+├── .gitignore
+├── deploy/
+│   └── deploy.sh                  双平台一键部署脚本
+├── competition-platform/          模拟竞赛平台
+│   ├── backend/                   Node.js + Express（端口 3000）
+│   ├── frontend/                  Vue 3 + Vite
+│   ├── database/
+│   └── deploy/                    ecosystem.config.js + nginx.conf
+└── integrated-platform/           综合平台
+    ├── backend/                   Node.js + Express + ws（端口 3001）
+    ├── frontend/                  Vue 3 + Vite
+    ├── database/
+    └── deploy/                    ecosystem.config.js
+```
+
+原 `info-literacy` 部署已在服务器备份至 `/var/www/info-literacy.bak`。
+
+### 14.2 模拟平台问题修复
+
+| 编号 | 问题 | 根因 | 修复方式 |
+| --- | --- | --- | --- |
+| ① | 模板下载返回 401 | `window.open` 无法携带 Authorization 头 | 改为 axios blob 下载 + `downloadBlob` |
+| ① | 错误账号提示"登录已过期" | 401 拦截器把所有 401 当作会话过期 | 登录接口路径跳过登出跳转，直接透出后端消息 |
+| ② | 点击选项即自动提交 | `selectOption` 内直接调用提交 | 移除自动提交，改为点击「下一题」时提交当前题；仅在 `allowReturn=false` 的环节显示跳题确认框 |
+| ③ | 筛选按钮与筛选栏贴得过近 | 全局 `.filter-card` 规则覆盖了局部样式 | 全局规则仅保留 `margin-bottom`；各页面局部设置按钮行左对齐 |
+| ④ | 答题过程中排行榜不更新 | `stage_scores` 仅在交卷时写入，排行榜只读该表 | 排行榜改为以 `answers` 实时汇总为准（`GREATEST` 取正式分与实时分较大值），并在每次答题后刷新排名 |
+| ⑤ | 队伍成绩对比各环节相同/为空 | `teamComparison` 固定按 `student_id IS NULL` 过滤，只匹配团队环节 | 按环节 `mode` 分支：团队环节取队伍记录，个人环节按队伍聚合队员成绩 |
+| ⑦ | 需要清空队伍答题数据 | 功能缺失 | 新增 `POST /api/teams/:id/clear-answers`，清理 `answers`、`stage_scores`、`stage_papers`、`cheat_logs` 与 Redis 排行键 |
+
+### 14.3 综合平台实现情况
+
+数据库 `integrated_platform`，7 张表：`access_keys`、`resource_categories`、`resource_sites`、`chat_rooms`、`chat_messages`、`quick_phrases`、`platform_settings`。
+
+预置数据：9 个资源分类、32 个资源网站、3 个访问密钥、10 条快速短语。
+
+后端接口分组：`/platform-api/auth`、`/platform-api/resources`、`/platform-api/questions`、`/platform-api/chat`、`/platform-api/admin`；WebSocket 位于 `/platform-ws`。
+
+题库共用说明：综合平台通过跨库查询读取 `info_literacy.questions`，题目选项存储于 `option_a`~`option_f` 六个列（非 JSON 字段），接口层统一转换为 `[{letter,text}]` 结构后返回。
+
+### 14.4 服务器部署状态
+
+| 项目 | 值 |
+| --- | --- |
+| 服务器 | `47.88.49.160`（Ubuntu 24.04.2 LTS / 2 vCPU / 1613MB 内存） |
+| 模拟平台 | PM2 进程 `competition-api`，端口 3000，路径 `/var/www/competition-platform` |
+| 综合平台 | PM2 进程 `platform-api`，端口 3001，路径 `/var/www/integrated-platform` |
+| Nginx | 仅监听 80 端口；`/` 指向模拟平台，`/platform/` 指向综合平台 |
+| 内存限制 | 模拟平台 384MB（`--max-old-space-size=340`），综合平台 256MB（`--max-old-space-size=220`） |
+| xray | 443 端口 VLESS+REALITY 保持不变，未做任何改动 |
+
+访问地址：
+
+- 模拟竞赛平台：http://47.88.49.160/ （`/login`、`/admin/login`）
+- 综合平台：http://47.88.49.160/platform/
+- 综合平台默认密钥：管理员 `ADMIN2026KEY`、用户 `USER2026KEY`（部署后应立即修改）
+
+### 14.5 验证结果
+
+| 测试项 | 结果 |
+| --- | --- |
+| `test-logic.js` 核心逻辑 | 28 / 28 通过 |
+| `audit-spec.js` 规格审计 | 68 / 68 通过 |
+| `smoke-test.js` 模拟平台端到端 | 43 / 43 通过 |
+| 综合平台 `smoke-test.js` | 31 / 31 通过 |
+| 综合平台 `ws-test.js` WebSocket | 9 / 9 通过 |
+| 公网双平台验证 | 19 / 19 通过 |
+
+关键功能实测（服务器生产环境）：
+
+- 模板下载：`/api/questions/import/template` 与 `/api/teams/import/template` 均返回 200 与 xlsx 文件流。
+- 实时排行榜：答题过程中分数随每题变化（实测序列 `2 → 1 → 0 → 2 → 4 → 3`），无需交卷即可看到排名。
+- 成绩对比：个人环节（星海队 3 分 / 1 人）与团队环节（逐光队 0 分）数据独立，不再相同或为空。
+- 综合平台：九大分类、32 个网站、题库跨库检索 21 题、管理后台统计均正常。
+
+**文档结束。**

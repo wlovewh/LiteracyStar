@@ -1,0 +1,29 @@
+{
+  "name": "integrated-platform-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "信息素养大赛综合平台 - 后端服务",
+  "main": "src/app.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "node --watch src/app.js",
+    "test:smoke": "node scripts/smoke-test.js",
+    "init:db": "node scripts/init-db.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "ioredis": "^5.4.1",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.0",
+    "mysql2": "^3.11.3",
+    "ws": "^8.18.0",
+    "xlsx": "^0.18.5"
+  }
+}

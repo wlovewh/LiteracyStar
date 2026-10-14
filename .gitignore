@@ -1,34 +1,29 @@
 # 依赖
 node_modules/
-*/node_modules/
 
 # 构建产物
 dist/
-frontend/dist/
-*.local
+competition-platform/frontend/dist/
+integrated-platform/frontend/dist/
 
-# 环境变量（含数据库密码与 JWT 密钥，禁止提交）
+# 环境变量（含数据库凭据与 JWT 密钥）
 .env
-.env.local
-.env.*.local
 backend/.env
+competition-platform/backend/.env
+integrated-platform/backend/.env
 
-# 日志
-logs/
-*.log
-npm-debug.log*
-pm2-*.log
-
-# 编辑器
-.vscode/
-.idea/
-*.swp
-.DS_Store
-
-# 临时文件
+# 部署临时文件
 deploy/_*
+*_stage/
 *.tar.gz
 
-# 数据库导出
-*.sql.bak
-dump.sql
+# 日志
+*.log
+logs/
+npm-debug.log*
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
