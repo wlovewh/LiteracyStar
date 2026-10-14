@@ -4,8 +4,10 @@ const ctrl = require('../controllers/eventController');
 const stageCtrl = require('../controllers/stageController');
 const { requireAdmin, requireAuth } = require('../middlewares/auth');
 
-// 前台首页：当前启用赛事与环节（登录即可访问）
+// 前台：可参与的赛事列表与首页数据（登录即可访问）
+// 注意：必须放在 '/:id' 之前，否则会被 '/:id' 抢先匹配
 router.get('/current', requireAuth, ctrl.current);
+router.get('/available', requireAuth, ctrl.forStudent);
 
 // 后台赛事管理
 router.get('/', requireAdmin, ctrl.list);

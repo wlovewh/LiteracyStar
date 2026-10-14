@@ -1,11 +1,31 @@
 <template>
   <div class="page">
     <div class="page-header">
-      <div>
+      <div class="header-main">
         <h2 class="page-title">{{ event?.name || '赛事列表' }}</h2>
         <p v-if="event?.description" class="text-sub event-desc">{{ event.description }}</p>
       </div>
-      <el-button :icon="Refresh" @click="load" :loading="loading">刷新</el-button>
+      <div class="header-actions">
+        <!-- 多个赛事时提供切换入口 -->
+        <el-select
+          v-if="events.length > 1"
+          v-model="selectedEventId"
+          class="event-select"
+          placeholder="选择赛事"
+          @change="onEventChange"
+        >
+          <el-option
+            v-for="e in events"
+            :key="e.id"
+            :label="e.name"
+            :value="e.id"
+          >
+            <span class="opt-name">{{ e.name }}</span>
+            <span class="opt-count">{{ e.active_stage_count }} 个环节</span>
+          </el-option>
+        </el-select>
+        <el-button :icon="Refresh" @click="load" :loading="loading">刷新</el-button>
+      </div>
     </div>
 
     <el-alert
@@ -66,6 +86,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { Refresh, EditPen, TrendCharts } from '@element-plus/icons-vue';
+import { ElMessage } from 'element-plus';
 import { eventApi } from '@/api';
 import { useUserStore } from '@/stores/user';
 import { humanDuration } from '@/utils/format';
@@ -76,6 +97,11 @@ const userStore = useUserStore();
 const loading = ref(false);
 const event = ref(null);
 const stages = ref([]);
+const events = ref([]);
+const selectedEventId = ref(null);
+
+// 记住学生上次选择的赛事，刷新后不再跳回默认赛事
+const STORAGE_KEY = 'selectedEventId';
 
 // 队员仅可见个人环节 (project.md 6.4)
 const visibleStages = computed(() => {
@@ -90,13 +116,25 @@ function timeLabel(s) {
   return humanDuration(t.totalTime);
 }
 
-async function load() {
+async function load(eventId) {
   loading.value = true;
   try {
-    const data = await eventApi.current();
+    const data = await eventApi.current(eventId ?? selectedEventId.value ?? undefined);
+    events.value = data.events || [];
     event.value = data.event;
+    selectedEventId.value = data.event ? data.event.id : null;
     // 仅显示已开启环节 (7.1 步骤1)
     stages.value = (data.stages || []).filter((s) => Number(s.status) === 1);
+
+    if (data.event) {
+      localStorage.setItem(STORAGE_KEY, String(data.event.id));
+    } else if (eventId !== undefined) {
+      // 上次选择的赛事已被停用或删除，清掉记忆并回到默认赛事
+      localStorage.removeItem(STORAGE_KEY);
+      ElMessage.warning('该赛事已不可用，已切换到其他赛事');
+      selectedEventId.value = null;
+      await load();
+    }
   } catch (e) {
     /* 拦截器已提示 */
   } finally {
@@ -104,10 +142,44 @@ async function load() {
   }
 }
 
-onMounted(load);
+function onEventChange(id) {
+  localStorage.setItem(STORAGE_KEY, String(id));
+  load(id);
+}
+
+onMounted(() => {
+  const saved = localStorage.getItem(STORAGE_KEY);
+  selectedEventId.value = saved ? Number(saved) : null;
+  load();
+});
 </script>
 
 <style scoped>
+.header-main {
+  min-width: 0;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-tight);
+  flex-shrink: 0;
+}
+
+.event-select {
+  width: 260px;
+}
+
+.opt-name {
+  margin-right: 12px;
+}
+
+.opt-count {
+  color: var(--c-text-sub);
+  font-size: var(--f-xs);
+  float: right;
+}
+
 .event-desc {
   margin: 6px 0 0;
   max-width: 700px;

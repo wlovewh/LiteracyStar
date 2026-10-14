@@ -15,5 +15,8 @@ exports.stages = asyncHandler(async (req, res) => {
   return ok(res, await stageService.listByEvent(req.params.id));
 });
 
-/** 前台首页数据 */
-exports.current = asyncHandler(async (req, res) => ok(res, await service.currentForStudent()));
+/** 前台：可参与的赛事列表（学生端选择用） */
+exports.forStudent = asyncHandler(async (req, res) => ok(res, await service.listForStudent()));
+
+/** 前台首页数据；可选 eventId 指定赛事 */
+exports.current = asyncHandler(async (req, res) => ok(res, await service.currentForStudent(req.query.eventId)));

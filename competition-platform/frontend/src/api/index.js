@@ -17,7 +17,8 @@ export const eventApi = {
   stages: (id) => http.get('/events/' + id + '/stages'),
   createStage: (id, data) => http.post('/events/' + id + '/stages', data),
   reorderStages: (id, ids) => http.put('/events/' + id + '/stages/reorder', { ids }),
-  current: () => http.get('/events/current')
+  current: (eventId) => http.get('/events/current', { params: eventId ? { eventId } : {} }),
+  available: () => http.get('/events/available')
 };
 
 // ---------------- 环节 ----------------

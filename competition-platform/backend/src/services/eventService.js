@@ -74,16 +74,44 @@ async function remove(id) {
   return { id };
 }
 
-/** 前台首页：当前启用的赛事及其环节 (project.md 7.1) */
-async function currentForStudent() {
-  const event = await db.queryOne('SELECT * FROM events WHERE status = 1 ORDER BY id DESC LIMIT 1');
-  if (!event) return { event: null, stages: [] };
+/**
+ * 前台可参与的赛事列表（学生端赛事选择用）。
+ * 只返回已启用的赛事，并附带已开启环节数量，便于前端展示。
+ */
+async function listForStudent() {
+  const rows = await db.query(
+    'SELECT e.id, e.name, e.description, e.created_at, ' +
+    '(SELECT COUNT(*) FROM stages s WHERE s.event_id = e.id AND s.status = 1) AS active_stage_count ' +
+    'FROM events e WHERE e.status = 1 ORDER BY e.id DESC'
+  );
+  return rows;
+}
+
+/**
+ * 前台首页：指定赛事的环节列表 (project.md 7.1)
+ *
+ * @param {number|string} [eventId] 学生选中的赛事；不传时回退到最近启用的赛事，
+ *   以兼容旧链接与未做选择的首次访问。
+ */
+async function currentForStudent(eventId) {
+  const events = await listForStudent();
+  if (!events.length) return { event: null, stages: [], events: [] };
+
+  let event = null;
+  if (eventId !== undefined && eventId !== null && eventId !== '') {
+    event = events.find((e) => String(e.id) === String(eventId)) || null;
+    // 指定的赛事不存在或已停用：不静默回退，避免学生误入其他赛事
+    if (!event) return { event: null, stages: [], events };
+  } else {
+    event = events[0];
+  }
+
   const rows = await db.query(
     'SELECT id, event_id, name, sort_order, status, config FROM stages WHERE event_id = ? ORDER BY sort_order ASC',
     [event.id]
   );
   // 返回摘要结构，前端无需再逐条请求详情
-  return { event, stages: rows.map(cfgMod.summarize) };
+  return { event, stages: rows.map(cfgMod.summarize), events };
 }
 
-module.exports = { list, getById, create, update, remove, currentForStudent };
+module.exports = { list, listForStudent, getById, create, update, remove, currentForStudent };
