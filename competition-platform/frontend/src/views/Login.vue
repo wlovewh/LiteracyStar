@@ -2,7 +2,8 @@
   <div class="login-page">
     <div class="login-card">
       <div class="login-brand">
-        <el-icon :size="30"><Reading /></el-icon>
+        <!-- 图标为综合平台隐藏入口，不提供任何文字提示 -->
+        <el-icon :size="30" class="brand-icon" @click="goIntegrated"><Reading /></el-icon>
         <h1 class="login-title">信息素养大赛模拟竞赛平台</h1>
         <p class="login-sub">2026年福建省大学生信息素养大赛 · 校内模拟</p>
       </div>
@@ -33,11 +34,6 @@
           </el-form>
         </el-tab-pane>
       </el-tabs>
-
-      <div class="platform-entry">
-        <span>需要备赛工具？</span>
-        <a href="/platform/" target="_blank" rel="noopener">进入综合平台（资源收录 · 题库检索 · 团队协作）</a>
-      </div>
     </div>
 
     <AppFooter />
@@ -53,6 +49,11 @@ import AppFooter from '@/components/AppFooter.vue';
 
 const router = useRouter();
 const userStore = useUserStore();
+
+/** 综合平台隐藏入口：点击顶部图标跳转，不做任何提示 */
+function goIntegrated() {
+  window.location.href = '/platform/';
+}
 
 const activeTab = ref('student');
 const loading = ref(false);
@@ -117,18 +118,6 @@ async function handleAdminLogin() {
   padding: var(--sp-page);
 }
 
-.platform-entry {
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid var(--c-border);
-  text-align: center;
-  font-size: var(--f-xs);
-  color: var(--c-text-sub);
-  line-height: 1.9;
-}
-
-.platform-entry a { color: var(--c-primary-2); font-weight: 500; }
-
 .login-card {
   width: 100%;
   max-width: 420px;
@@ -159,6 +148,14 @@ async function handleAdminLogin() {
   color: var(--c-text-sub);
   margin: 0;
 }
+
+/* 隐藏入口：图标可点击跳转综合平台，无任何提示 */
+.brand-icon {
+  cursor: pointer;
+  transition: color .18s ease;
+}
+
+.brand-icon:hover { color: var(--c-primary-2); }
 
 .login-tabs {
   margin-top: 8px;

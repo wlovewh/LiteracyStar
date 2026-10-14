@@ -2,9 +2,10 @@
   <div class="student-layout">
     <header class="student-header">
       <div class="header-inner">
-        <div class="brand" @click="router.push('/')">
-          <el-icon :size="22"><Reading /></el-icon>
-          <span class="brand-title">信息素养大赛模拟竞赛平台</span>
+        <div class="brand">
+          <!-- 图标为综合平台隐藏入口，不提供任何文字提示 -->
+          <el-icon :size="22" class="brand-icon" title="" @click="goIntegrated"><Reading /></el-icon>
+          <span class="brand-title" @click="router.push('/')">信息素养大赛模拟竞赛平台</span>
         </div>
 
         <div class="header-right">
@@ -34,6 +35,11 @@ import AppFooter from '@/components/AppFooter.vue';
 
 const router = useRouter();
 const userStore = useUserStore();
+
+/** 综合平台隐藏入口：点击顶部图标跳转，不做任何提示 */
+function goIntegrated() {
+  window.location.href = '/platform/';
+}
 
 async function handleLogout() {
   try {
@@ -77,13 +83,21 @@ async function handleLogout() {
   display: flex;
   align-items: center;
   gap: 10px;
-  cursor: pointer;
   color: var(--c-primary);
 }
+
+/* 隐藏入口：图标可点击跳转综合平台，无任何提示 */
+.brand-icon {
+  cursor: pointer;
+  transition: color .18s ease;
+}
+
+.brand-icon:hover { color: var(--c-primary-2); }
 
 .brand-title {
   font-size: 16px;
   font-weight: 600;
+  cursor: pointer;
 }
 
 .header-right {

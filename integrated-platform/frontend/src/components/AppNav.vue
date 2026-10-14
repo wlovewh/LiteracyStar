@@ -37,7 +37,7 @@
           />
         </el-form-item>
         <div class="login-hint">
-          密钥由管理员分配。无密钥也可浏览资源收录，题库检索需管理员开放。
+          密钥由管理员分配。首页可自由浏览，资源收录、题库检索与团队协作需先使用密钥登录。
         </div>
       </el-form>
       <template #footer>
@@ -49,7 +49,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useAuthStore } from '@/stores/auth';
@@ -87,7 +87,11 @@ async function handleLogin() {
     ElMessage.success('登录成功');
     showLogin.value = false;
     keyValue.value = '';
-    if (user.role === 'admin' && route.query.needAdmin) router.push('/admin');
+
+    // 登录后回到被拦截的目标页面
+    const redirect = route.query.redirect;
+    if (redirect) router.push(String(redirect));
+    else if (user.role === 'admin' && route.query.needAdmin) router.push('/admin');
   } catch (e) {
     // 错误提示已由 http 拦截器统一弹出
   } finally {
@@ -98,8 +102,17 @@ async function handleLogin() {
 function handleLogout() {
   auth.logout();
   ElMessage.success('已退出登录');
-  if (route.meta.requiresAdmin) router.push('/');
+  if (route.meta.requiresAuth) router.push('/');
 }
+
+// 被守卫拦截跳回首页时，自动弹出密钥登录框
+watch(
+  () => route.query.needAuth,
+  (v) => {
+    if (v && !auth.isLoggedIn) showLogin.value = true;
+  },
+  { immediate: true }
+);
 </script>
 
 <style scoped>

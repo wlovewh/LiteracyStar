@@ -157,21 +157,18 @@ a:hover { text-decoration: underline; }
 
 .filter-card .el-form { row-gap: 12px; }
 
+/* 筛选表单项并排，按钮行与筛选项同排，靠右对齐 */
 .filter-card .el-form-item {
   margin-bottom: 0;
   margin-right: 20px;
 }
 
-/* 查询/重置按钮与上方筛选项左对齐 */
+/* 按钮所在的最后一个表单项：与筛选项并排，不再换行 */
 .filter-card .el-form-item:last-child {
-  margin-left: 0;
   margin-right: 0;
-  width: 100%;
-  display: flex;
 }
 
 .filter-card .el-form-item:last-child .el-form-item__content {
-  margin-left: 0 !important;
   gap: 12px;
 }
 

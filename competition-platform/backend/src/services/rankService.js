@@ -54,17 +54,32 @@ async function getRanking(stageId, { scopeKey = 'common', limit = 200 } = {}) {
     scoreMap.set(String(s.team_id) + '|' + (s.student_id || ''), s);
   });
 
+  // 尚未交卷时 stage_scores 为空，退化为按 answers 实时汇总，
+  // 保证答题过程中团队榜同样可见（与个人榜口径一致）。
+  const liveMap = new Map();
+  if (!scores.length) {
+    const live = await db.query(
+      'SELECT team_id, COALESCE(SUM(score_delta), 0) AS total_score, COALESCE(SUM(time_spent), 0) AS total_time ' +
+      'FROM answers WHERE stage_id = ? GROUP BY team_id',
+      [stageId]
+    );
+    live.forEach((r) => liveMap.set(String(r.team_id), r));
+  }
+
   return desc.map((e, i) => {
     const teamId = Number(e.member);
     const team = teamMap.get(teamId) || {};
     const row = scoreMap.get(String(teamId) + '|' + (scopeKey === 'common' ? '' : scopeKey)) || scoreMap.get(String(teamId) + '|');
+    const live = liveMap.get(String(teamId));
+    const totalScore = row ? Number(row.total_score) : (live ? Number(live.total_score) : 0);
+    const totalTime = row ? Number(row.total_time) : (live ? Number(live.total_time) : 0);
     return {
       rank: i + 1,
       teamId,
       teamName: team.name || ('队伍#' + teamId),
       leaderName: team.leader_name || '',
-      totalScore: row ? Number(row.total_score) : 0,
-      totalTime: row ? Number(row.total_time) : 0,
+      totalScore,
+      totalTime,
       compositeScore: Number(e.score)
     };
   });
@@ -103,15 +118,21 @@ async function clearStage(stageId) {
 /**
  * 个人榜：个人环节中每位选手独立排名。
  *
- * 说明：stage_scores 只在"交卷"时写入，若仅依赖它，
- * 答题过程中的排行榜将始终为空。因此这里以 answers 的实时累计分
- * 为基础（COALESCE 取较大值，保证交卷后的正式成绩不被实时分覆盖）。
+ * 说明：stage_scores 只在"交卷"时写入。答题过程中尚未交卷（ss 为空），
+ * 必须以 answers 的实时累计分为准，否则排行榜始终为空。
+ *
+ * 注意：不能写成 GREATEST(COALESCE(ss.total_score,0), SUM(...))——
+ * 未交卷时 COALESCE 得到 0，GREATEST(0, 负数) 恒为 0，
+ * 只要答错一题实时分数就被"钉"在 0 分，表现为排行榜毫无动静。
+ * 正确做法：交卷后（ss 存在）用正式成绩，未交卷用实时累计分。
  */
 async function getIndividualRanking(stageId, { limit = 200 } = {}) {
   const rows = await db.query(
     'SELECT a.student_id, a.team_id, ' +
-    '       GREATEST(COALESCE(ss.total_score, 0), COALESCE(SUM(a.score_delta), 0)) AS total_score, ' +
-    '       LEAST(COALESCE(ss.total_time, 999999), COALESCE(SUM(a.time_spent), 0)) AS total_time, ' +
+    '       CASE WHEN ss.total_score IS NOT NULL THEN ss.total_score ' +
+    '            ELSE COALESCE(SUM(a.score_delta), 0) END AS total_score, ' +
+    '       CASE WHEN ss.total_time IS NOT NULL THEN ss.total_time ' +
+    '            ELSE COALESCE(SUM(a.time_spent), 0) END AS total_time, ' +
     '       t.name AS team_name, ' +
     'CASE WHEN t.leader_id = a.student_id THEN t.leader_name ' +
     '     WHEN t.member1_id = a.student_id THEN t.member1_name ' +

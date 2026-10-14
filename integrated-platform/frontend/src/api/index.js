@@ -23,7 +23,16 @@ export const resourceApi = {
   createSite: (data) => http.post('/resources/sites', data),
   updateSite: (id, data) => http.put('/resources/sites/' + id, data),
   removeSite: (id) => http.delete('/resources/sites/' + id),
-  trackVisit: (id) => http.post('/resources/sites/' + id + '/visit')
+  trackVisit: (id) => http.post('/resources/sites/' + id + '/visit'),
+
+  // 图标上传
+  uploadIcon: (file, siteId) => {
+    const fd = new FormData();
+    fd.append('icon', file);
+    if (siteId) fd.append('siteId', siteId);
+    return http.post('/resources/icons', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+  },
+  removeIcon: (filename) => http.delete('/resources/icons/' + filename)
 };
 
 // ---------------- 题库检索 ----------------
@@ -35,7 +44,21 @@ export const questionApi = {
   checkDuplicate: (roomId, content) => http.post('/questions/check-duplicate', { roomId, content }),
   exportCsv: (params) => http.get('/questions/export', { params, responseType: 'blob' }),
   getSettings: () => http.get('/questions/settings'),
-  setSettings: (searchEnabled) => http.put('/questions/settings', { searchEnabled })
+  setSettings: (searchEnabled) => http.put('/questions/settings', { searchEnabled }),
+
+  // 题库管理（管理端）
+  template: () => http.get('/questions/manage/template'),
+  create: (data) => http.post('/questions/manage', data),
+  update: (id, data) => http.put('/questions/manage/' + id, data),
+  remove: (id) => http.delete('/questions/manage/' + id),
+  batchRemove: (ids) => http.post('/questions/manage/batch-remove', { ids }),
+  importRows: (rows, skipDuplicate = true) => http.post('/questions/manage/import', { rows, skipDuplicate }),
+  importFile: (file, skipDuplicate = true) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('skipDuplicate', skipDuplicate ? '1' : '0');
+    return http.post('/questions/manage/import', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+  }
 };
 
 // ---------------- 聊天室 ----------------

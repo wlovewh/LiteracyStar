@@ -74,12 +74,33 @@ async function transaction(handler) {
 }
 
 /**
+ * 为 questions 表加上跨库限定名。
+ *
+ * 注意：必须幂等——调用方可能已经写成 `info_literacy.questions`，
+ * 若再次替换会得到 `info_literacy.info_literacy.questions` 而报语法错误。
+ * 因此先排除已被限定（前面带库名点号）的情况。
+ */
+function qualifyQuestions(sql) {
+  return sql.replace(/(?<![\w.])(questions)\b/g, config.competitionDb + '.questions');
+}
+
+/**
  * 跨库查询：读取模拟竞赛平台的 questions 表。
  * 两个平台共用同一份题库，通过显式库名限定实现双向同步。
  */
 async function queryCompetition(sql, params = []) {
-  const [rows] = await getPool().execute(sql.replace(/\bquestions\b/g, config.competitionDb + '.questions'), params);
+  const [rows] = await getPool().execute(qualifyQuestions(sql), params);
   return rows;
+}
+
+/**
+ * 跨库写操作：对模拟竞赛平台的 questions 表执行 INSERT/UPDATE/DELETE。
+ * 注意 mysql2 的 execute 返回 [result, fields] 元组，这里统一解包为 result，
+ * 避免调用方误用 result.insertId（实为 undefined）。
+ */
+async function executeCompetition(sql, params = []) {
+  const [result] = await getPool().execute(qualifyQuestions(sql), params);
+  return result;
 }
 
 /** 健康检查 */
@@ -99,4 +120,4 @@ async function close() {
   }
 }
 
-module.exports = { getPool, query, queryOne, execute, transaction, queryCompetition, ping, close };
+module.exports = { getPool, query, queryOne, execute, transaction, queryCompetition, executeCompetition, ping, close };

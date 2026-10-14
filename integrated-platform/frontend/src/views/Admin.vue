@@ -112,32 +112,14 @@
         </div>
       </el-tab-pane>
 
-      <!-- ============ 分类管理 ============ -->
-      <el-tab-pane label="分类管理" name="categories">
-        <div class="app-card">
-          <div class="page-header">
-            <div class="page-title" style="font-size: var(--f-base)">资源分类</div>
-            <el-button type="primary" @click="openCatDialog()">新增分类</el-button>
-          </div>
-          <el-table :data="categories" stripe style="width: 100%">
-            <el-table-column prop="name" label="分类名称" min-width="200" />
-            <el-table-column prop="site_count" label="网站数" width="100" />
-            <el-table-column prop="sort_order" label="排序" width="90" />
-            <el-table-column label="状态" width="100">
-              <template #default="{ row }">
-                <el-tag :type="row.status === 1 ? 'primary' : 'info'" effect="plain" size="small">
-                  {{ row.status === 1 ? '启用' : '禁用' }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" width="160">
-              <template #default="{ row }">
-                <el-button link type="primary" size="small" @click="openCatDialog(row)">编辑</el-button>
-                <el-button link type="danger" size="small" @click="removeCategory(row)">删除</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
+      <!-- ============ 资源管理 ============ -->
+      <el-tab-pane label="资源管理" name="resources">
+        <ResourceManage @changed="loadDashboard" />
+      </el-tab-pane>
+
+      <!-- ============ 题库管理 ============ -->
+      <el-tab-pane label="题库管理" name="questions">
+        <QuestionManage @changed="loadDashboard" />
       </el-tab-pane>
 
       <!-- ============ 聊天室配置 ============ -->
@@ -242,24 +224,6 @@
       </template>
     </el-dialog>
 
-    <!-- 分类弹窗 -->
-    <el-dialog v-model="catDialog" :title="catForm.id ? '编辑分类' : '新增分类'" width="440px">
-      <el-form :model="catForm" label-width="90px">
-        <el-form-item label="分类名称" required>
-          <el-input v-model="catForm.name" placeholder="例如：学术信息资源" />
-        </el-form-item>
-        <el-form-item label="排序">
-          <el-input-number v-model="catForm.sortOrder" :min="0" :max="999" />
-        </el-form-item>
-        <el-form-item label="状态">
-          <el-switch v-model="catForm.status" :active-value="1" :inactive-value="0" active-text="启用" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="catDialog = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="saveCategory">保存</el-button>
-      </template>
-    </el-dialog>
 
     <!-- 聊天室配置弹窗 -->
     <el-dialog v-model="roomDialog" title="聊天室配置" width="440px">
@@ -310,6 +274,8 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import * as echarts from 'echarts';
 import { adminApi, authApi, resourceApi, chatApi, questionApi } from '@/api';
 import AppPager from '@/components/AppPager.vue';
+import ResourceManage from '@/views/admin/ResourceManage.vue';
+import QuestionManage from '@/views/admin/QuestionManage.vue';
 
 const tab = ref('dashboard');
 const saving = ref(false);
@@ -462,50 +428,6 @@ function copyKey(row) {
   }
 }
 
-// ---------------- 分类 ----------------
-const categories = ref([]);
-const catDialog = ref(false);
-const catForm = ref({ id: null, name: '', sortOrder: 0, status: 1 });
-
-async function loadCategories() {
-  try {
-    categories.value = await resourceApi.categories({ withSites: 1 });
-  } catch (e) { /* 错误已提示 */ }
-}
-
-function openCatDialog(row) {
-  catForm.value = row
-    ? { id: row.id, name: row.name, sortOrder: row.sort_order, status: row.status }
-    : { id: null, name: '', sortOrder: 0, status: 1 };
-  catDialog.value = true;
-}
-
-async function saveCategory() {
-  if (!catForm.value.name.trim()) return ElMessage.warning('请填写分类名称');
-  saving.value = true;
-  try {
-    const payload = { name: catForm.value.name, sortOrder: catForm.value.sortOrder, status: catForm.value.status };
-    if (catForm.value.id) await resourceApi.updateCategory(catForm.value.id, payload);
-    else await resourceApi.createCategory(payload);
-    ElMessage.success('保存成功');
-    catDialog.value = false;
-    loadCategories();
-  } catch (e) { /* 错误已提示 */ } finally {
-    saving.value = false;
-  }
-}
-
-async function removeCategory(row) {
-  try {
-    await ElMessageBox.confirm('确定删除分类「' + row.name + '」吗？', '删除确认', { type: 'warning' });
-  } catch (e) { return; }
-  try {
-    await resourceApi.removeCategory(row.id);
-    ElMessage.success('已删除');
-    loadCategories();
-  } catch (e) { /* 错误已提示 */ }
-}
-
 // ---------------- 聊天室 ----------------
 const rooms = ref([]);
 const phrases = ref([]);
@@ -628,7 +550,6 @@ function formatDate(v) {
 onMounted(() => {
   loadDashboard();
   loadKeys();
-  loadCategories();
   loadRooms();
   loadPhrases();
   loadSettings();

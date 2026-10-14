@@ -1,5 +1,6 @@
 'use strict';
 const http = require('http');
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 
@@ -31,6 +32,12 @@ app.use((req, res, next) => {
   });
   next();
 });
+
+// ---------------- 静态资源（上传的图标） ----------------
+app.use('/platform-api/uploads', express.static(path.resolve(__dirname, '..', 'uploads'), {
+  maxAge: '7d',
+  fallthrough: true
+}));
 
 // ---------------- 健康检查 ----------------
 app.get('/platform-api/health', async (req, res) => {

@@ -204,16 +204,12 @@ onMounted(load);
   margin-right: 20px;
 }
 
-/* 查询/重置按钮与上方筛选项左对齐 */
+/* 查询/重置按钮与筛选项并排，不再单独换行，并保持与标签左对齐 */
 .filter-card :deep(.el-form-item:last-child) {
-  margin-left: 0;
   margin-right: 0;
-  width: 100%;
-  display: flex;
 }
 
 .filter-card :deep(.el-form-item:last-child .el-form-item__content) {
-  margin-left: 0 !important;
   gap: 12px;
 }
 

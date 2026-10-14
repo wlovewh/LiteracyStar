@@ -231,7 +231,228 @@ async function getSearchCount() {
   return row ? Number(row.value) : 0;
 }
 
+
+// ==================== 题库管理（管理端，8.1） ====================
+// 与模拟竞赛平台共用 questions 表，写操作通过跨库限定名执行，双方即时同步。
+
+/** 把 [{letter,text}] 或 {A:'..'} 转为 option_a..option_f 六个列 */
+function optionsToColumns(options) {
+  const cols = { option_a: null, option_b: null, option_c: null, option_d: null, option_e: null, option_f: null };
+  if (!options) return cols;
+
+  let obj = options;
+  if (Array.isArray(options)) {
+    obj = {};
+    options.forEach((o) => {
+      const letter = String(o.letter || '').toUpperCase();
+      if (/^[A-F]$/.test(letter)) obj[letter] = o.text;
+    });
+  }
+  for (const letter of ['A', 'B', 'C', 'D', 'E', 'F']) {
+    const v = obj[letter] !== undefined ? obj[letter] : obj[letter.toLowerCase()];
+    cols['option_' + letter.toLowerCase()] = v === undefined || v === null || String(v) === '' ? null : String(v);
+  }
+  return cols;
+}
+
+/** 归一化可选文本字段，避免 undefined 进入 SQL 绑定参数 */
+function orNull(v) {
+  if (v === undefined || v === null) return null;
+  const s = String(v);
+  return s === '' ? null : s;
+}
+
+/** 校验题目入参 */
+function validateQuestion(payload, { partial = false } = {}) {
+  const out = {};
+
+  if (!partial || payload.type !== undefined) {
+    const type = Number(payload.type);
+    if (![1, 2, 3].includes(type)) throw new AppError('题型必须是 1(单选) / 2(多选) / 3(判断)');
+    out.type = type;
+  }
+  if (!partial || payload.content !== undefined) {
+    const content = String(payload.content || '').trim();
+    if (!content) throw new AppError('题干不能为空');
+    out.content = content;
+  }
+  if (!partial || payload.answer !== undefined) {
+    const answer = String(payload.answer || '').trim().toUpperCase();
+    if (!answer) throw new AppError('正确答案不能为空');
+    if (!/^[A-F]+$/.test(answer)) throw new AppError('正确答案只能是 A-F 的字母组合');
+    out.answer = answer;
+  }
+  if (payload.difficulty !== undefined && payload.difficulty !== null && payload.difficulty !== '') {
+    const d = Number(payload.difficulty);
+    if (!Number.isInteger(d) || d < 1 || d > 5) throw new AppError('难度需为 1-5 的整数');
+    out.difficulty = d;
+  }
+  return out;
+}
+
+/** 单题详情（含选项与答案，供编辑回显） */
+async function detailQuestion(id) {
+  const rows = await db.queryCompetition(
+    'SELECT q.id, q.type, q.content, q.option_a, q.option_b, q.option_c, q.option_d, q.option_e, q.option_f, ' +
+    '       q.answer, q.analysis, q.module, q.difficulty, q.source, q.tags, q.created_at ' +
+    'FROM questions q WHERE q.id = ? LIMIT 1',
+    [id]
+  );
+  if (!rows.length) throw new AppError('题目不存在', 404, 404);
+  const r = rows[0];
+  return {
+    id: r.id,
+    type: r.type,
+    typeLabel: QUESTION_TYPE_LABEL[r.type] || '未知',
+    content: r.content,
+    options: optionsFromRow(r),
+    answer: r.answer,
+    analysis: r.analysis || '',
+    module: r.module || '',
+    difficulty: r.difficulty,
+    source: r.source || '',
+    tags: r.tags || ''
+  };
+}
+
+/** 新增题目 */
+async function createQuestion(payload = {}) {
+  const base = validateQuestion(payload);
+  const cols = optionsToColumns(payload.options);
+
+  const dup = await db.queryCompetition('SELECT id FROM questions q WHERE q.content = ? LIMIT 1', [base.content]);
+  if (dup.length) throw new AppError('已存在相同题干的题目（#' + dup[0].id + '）');
+
+  const res = await db.executeCompetition(
+    'INSERT INTO ' + config.competitionDb + '.questions ' +
+    '(type, content, option_a, option_b, option_c, option_d, option_e, option_f, answer, analysis, module, difficulty, source, tags) ' +
+    'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    [
+      base.type, base.content,
+      cols.option_a, cols.option_b, cols.option_c, cols.option_d, cols.option_e, cols.option_f,
+      base.answer,
+      orNull(payload.analysis),
+      orNull(payload.module),
+      base.difficulty !== undefined ? base.difficulty : 3,
+      orNull(payload.source),
+      orNull(payload.tags)
+    ]
+  );
+  return detailQuestion(res.insertId);
+}
+
+/** 更新题目 */
+async function updateQuestion(id, payload = {}) {
+  const existing = await detailQuestion(id);
+  const base = validateQuestion(payload, { partial: true });
+  const cols = optionsToColumns(payload.options !== undefined ? payload.options : existing.options);
+
+  if (base.content && base.content !== existing.content) {
+    const dup = await db.queryCompetition('SELECT id FROM questions q WHERE q.content = ? AND q.id <> ? LIMIT 1', [base.content, id]);
+    if (dup.length) throw new AppError('已存在相同题干的题目（#' + dup[0].id + '）');
+  }
+
+  await db.executeCompetition(
+    'UPDATE ' + config.competitionDb + '.questions SET ' +
+    'type = ?, content = ?, option_a = ?, option_b = ?, option_c = ?, option_d = ?, option_e = ?, option_f = ?, ' +
+    'answer = ?, analysis = ?, module = ?, difficulty = ?, source = ?, tags = ? WHERE id = ?',
+    [
+      base.type !== undefined ? base.type : existing.type,
+      base.content !== undefined ? base.content : existing.content,
+      cols.option_a, cols.option_b, cols.option_c, cols.option_d, cols.option_e, cols.option_f,
+      base.answer !== undefined ? base.answer : existing.answer,
+      orNull(payload.analysis !== undefined ? payload.analysis : existing.analysis),
+      orNull(payload.module !== undefined ? payload.module : existing.module),
+      base.difficulty !== undefined ? base.difficulty : existing.difficulty,
+      orNull(payload.source !== undefined ? payload.source : existing.source),
+      orNull(payload.tags !== undefined ? payload.tags : existing.tags),
+      id
+    ]
+  );
+  return detailQuestion(id);
+}
+
+/** 删除题目 */
+async function removeQuestion(id) {
+  const existing = await detailQuestion(id);
+  await db.executeCompetition('DELETE FROM ' + config.competitionDb + '.questions WHERE id = ?', [id]);
+  return { id: Number(existing.id) };
+}
+
+/** 批量删除 */
+async function removeQuestions(ids = []) {
+  const list = ids.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  if (!list.length) throw new AppError('请选择要删除的题目');
+  const res = await db.executeCompetition(
+    'DELETE FROM ' + config.competitionDb + '.questions WHERE id IN (' + list.map(() => '?').join(',') + ')',
+    list
+  );
+  return { deleted: res.affectedRows || 0 };
+}
+
+/**
+ * 批量导入 (8.1 题库管理)
+ * rows: [{ type, content, options, answer, analysis, module, difficulty, source, tags }]
+ * 逐行校验，返回成功/失败明细，不因单行失败中断整批。
+ */
+async function importQuestions(rows = [], { skipDuplicate = true } = {}) {
+  if (!Array.isArray(rows) || !rows.length) throw new AppError('导入内容为空');
+
+  const result = { total: rows.length, inserted: 0, skipped: 0, failed: 0, errors: [] };
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const lineNo = i + 2; // 含表头
+    try {
+      const base = validateQuestion(row);
+      const cols = optionsToColumns(row.options);
+
+      if (skipDuplicate) {
+        const dup = await db.queryCompetition('SELECT id FROM questions q WHERE q.content = ? LIMIT 1', [base.content]);
+        if (dup.length) {
+          result.skipped += 1;
+          continue;
+        }
+      }
+
+      await db.executeCompetition(
+        'INSERT INTO ' + config.competitionDb + '.questions ' +
+        '(type, content, option_a, option_b, option_c, option_d, option_e, option_f, answer, analysis, module, difficulty, source, tags) ' +
+        'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [
+          base.type, base.content,
+          cols.option_a, cols.option_b, cols.option_c, cols.option_d, cols.option_e, cols.option_f,
+          base.answer,
+          orNull(row.analysis),
+          orNull(row.module),
+          base.difficulty !== undefined ? base.difficulty : 3,
+          orNull(row.source),
+          orNull(row.tags)
+        ]
+      );
+      result.inserted += 1;
+    } catch (err) {
+      result.failed += 1;
+      if (result.errors.length < 20) result.errors.push({ line: lineNo, message: err.message });
+    }
+  }
+  return result;
+}
+
+/** 导入模板表头与示例行 */
+function importTemplate() {
+  return {
+    headers: ['题型', '题干', '选项A', '选项B', '选项C', '选项D', '选项E', '选项F', '正确答案', '解析', '知识模块', '难度', '来源', '标签'],
+    sample: [
+      [1, '人工智能领域中，GPT 中的 G 代表？', 'Generative', 'General', 'Global', 'Graph', '', '', 'A', 'GPT 全称 Generative Pre-trained Transformer。', '人工智能', 2, '示例题库', 'AI'],
+      [3, '信息素养只需要掌握检索技能即可。', '', '', '', '', '', '', 'B', '信息素养包含信息意识、知识、能力与伦理。', '信息素养基础', 1, '示例题库', '判断题']
+    ]
+  };
+}
+
 module.exports = {
   search, facets, extractKeywords, checkDuplicate, exportCsv, similarity,
+  detailQuestion, createQuestion, updateQuestion, removeQuestion, removeQuestions,
+  importQuestions, importTemplate, optionsToColumns,
   isSearchEnabled, setSearchEnabled, trackSearch, getSearchCount, normalizeOptions, optionsFromRow, QUESTION_TYPE_LABEL
 };
