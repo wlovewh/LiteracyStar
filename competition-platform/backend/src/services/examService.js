@@ -66,10 +66,15 @@ async function startExam(stageId, user) {
   };
   const { scopeKey, items } = await paper.ensurePaper(stage, cfg, ctx);
 
-  // 记录首次进入时间，用于服务端强制时限（重复进入不覆盖）
+  // 记录首次进入时间，用于服务端强制时限。
+  // 已交卷的记录视为本轮结束：管理员清空答题数据后允许重新开始，此时重置计时。
   await db.execute(
     'INSERT INTO stage_attempts (stage_id, team_id, student_id, scope_key) VALUES (?,?,?,?) ' +
-    'ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP',
+    'ON DUPLICATE KEY UPDATE ' +
+    '  scope_key = IF(submitted_at IS NULL, scope_key, VALUES(scope_key)), ' +
+    '  started_at = IF(submitted_at IS NULL, started_at, CURRENT_TIMESTAMP), ' +
+    '  submitted_at = NULL, ' +
+    '  updated_at = CURRENT_TIMESTAMP',
     [stageId, user.teamId, user.studentId, scopeKey]
   );
   const timeState = await remainingSeconds(stageId, user, relay.active ? relay.availableTime : cfg.timeConfig.totalTime);
@@ -121,7 +126,9 @@ async function remainingSeconds(stageId, user, limitSeconds) {
   if (!Number.isFinite(startedAt)) return { remaining: limit, expired: false, startedAt: row.started_at };
   const elapsed = Math.floor((Date.now() - startedAt) / 1000);
   const remaining = Math.max(0, limit - elapsed);
-  return { remaining, expired: remaining <= 0, startedAt: row.started_at, submittedAt: row.submitted_at };
+  // elapsed 为真实经过时间（可能超过 limit）；remaining 才是被截断到 0 的剩余时间。
+  // 交卷用时必须用 elapsed，否则超时交卷会永远显示为刚好用完时限。
+  return { remaining, elapsed, expired: remaining <= 0, startedAt: row.started_at, submittedAt: row.submitted_at };
 }
 
 /**
@@ -254,7 +261,7 @@ async function refreshLiveRank(stageId, user, cfg) {
  * 交卷：汇总分数、写入 stage_scores、更新排行榜。
  * 接力模式下"交卷并接力"同时计算节余时间 (project.md 7.2)。
  */
-async function submitStage(stageId, user, { totalTime } = {}) {
+async function submitStage(stageId, user, { totalTime, pendingAnswers } = {}) {
   const stage = await stageService.getRow(stageId);
   const cfg = cfgMod.normalizeConfig(stage.config);
   await assertVisible(stage, cfg, user);
@@ -264,14 +271,66 @@ async function submitStage(stageId, user, { totalTime } = {}) {
   // 团队模式：分数归属队伍（student_id = NULL）；个人模式：归属个人
   const scoreStudentId = cfg.mode === 'team' ? null : user.studentId;
 
+  // 交卷时补记"已选择但尚未提交"的答案。
+  // 倒计时到点与最后一题的提交请求可能同时发生，导致已选答案未落库、
+  // 最终被判为未作答。这里在汇总前先补交，保证学生的选择不丢失。
+  if (Array.isArray(pendingAnswers) && pendingAnswers.length) {
+    const ctx0 = { studentId: user.studentId, teamId: user.teamId, playerIndex: relay.active ? relay.playerIndex : 1 };
+    const { items: paperItems } = await paper.ensurePaper(stage, cfg, ctx0);
+    const known = new Set(
+      (await db.query(
+        'SELECT question_id FROM answers WHERE stage_id = ? AND team_id = ? AND student_id = ?',
+        [stageId, user.teamId, user.studentId]
+      )).map((r) => Number(r.question_id))
+    );
+
+    for (const pa of pendingAnswers) {
+      const qid = Number(pa && pa.questionId);
+      const ans = pa && pa.answer;
+      if (!qid || ans === undefined || ans === null || ans === '') continue;
+      if (known.has(qid)) continue; // 已提交过的不重复计分
+
+      const item = paperItems.find((it) => it.question.id === qid);
+      if (!item) continue;
+
+      const res = scoring.scoreQuestion(cfg, item.question, ans, {
+        opened: true,
+        isLastPlayer: relay.active ? relay.isLastPlayer : true
+      });
+      await db.execute(
+        'INSERT INTO answers (stage_id, team_id, student_id, question_id, user_answer, is_correct, score_delta, time_spent, submit_order) ' +
+        'VALUES (?,?,?,?,?,?,?,?,?)',
+        [stageId, user.teamId, user.studentId, qid, String(ans), res.isCorrect, res.scoreDelta, Number(pa.timeSpent) || 0, 0]
+      );
+      known.add(qid);
+    }
+  }
+
   const rows = await db.query(
     'SELECT question_id, user_answer, is_correct, score_delta, time_spent FROM answers WHERE stage_id = ? AND team_id = ? AND student_id = ?',
     [stageId, user.teamId, user.studentId]
   );
 
   const totalScore = rows.reduce((sum, r) => sum + Number(r.score_delta || 0), 0);
-  const usedTime = rows.reduce((sum, r) => sum + Number(r.time_spent || 0), 0);
-  const finalTime = totalTime !== undefined && totalTime !== null ? Math.max(0, Number(totalTime)) : usedTime;
+
+  // 用时以服务端记录为准。
+  // 前端传来的 totalTime 由每秒自减的倒计时算出，浏览器在后台标签页会降频，
+  // 实测比真实用时少 1~2 分钟（用户用了 10 分钟却显示 08:09）。
+  // 因此这里以 stage_attempts.started_at 为准计算真实用时，前端值仅作兜底。
+  const limitSeconds = relay.active ? relay.availableTime : cfg.timeConfig.totalTime;
+  const timeState = await remainingSeconds(stageId, user, limitSeconds);
+  let finalTime;
+  if (timeState.startedAt) {
+    // 真实经过时间；接力模式下再扣除前面队员的节余时间。
+    // 注意不能写成 limit - remaining：超时后 remaining 被截断为 0，
+    // 会得到"恰好用完时限"的错误结果。
+    const elapsed = Math.max(0, Number(timeState.elapsed) || 0);
+    finalTime = relay.active ? Math.max(0, elapsed - Number(relay.carried || 0)) : elapsed;
+  } else if (totalTime !== undefined && totalTime !== null) {
+    finalTime = Math.max(0, Number(totalTime));
+  } else {
+    finalTime = rows.reduce((sum, r) => sum + Number(r.time_spent || 0), 0);
+  }
 
   // 已打开但从未提交的题目扣分（未答扣分在提交时无法感知，交卷时统一补齐）
   const ctx = { studentId: user.studentId, teamId: user.teamId, playerIndex: relay.active ? relay.playerIndex : 1 };

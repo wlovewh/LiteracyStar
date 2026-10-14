@@ -82,6 +82,9 @@ async function bootstrap() {
       .catch((err) => logger.warn('清理过期消息失败: ' + err.message));
   }, 3600 * 1000);
 
+  // 数据库定时备份调度（按平台设置中的时间执行）
+  await require('./services/backupService').start();
+
   const port = config.port;
   server.listen(port, () => {
     logger.info('综合平台后端已启动: http://localhost:' + port);

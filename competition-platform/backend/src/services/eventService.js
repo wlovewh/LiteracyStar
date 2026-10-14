@@ -77,15 +77,36 @@ async function remove(id) {
 /**
  * 前台可参与的赛事列表（学生端赛事选择用）。
  * 只返回已启用的赛事，并附带已开启环节数量，便于前端展示。
+ *
+ * 可见性规则（project.md 赛事权限）：
+ *   某赛事若在 event_teams 中没有任何记录 => 对全体队伍开放；
+ *   一旦配置了白名单 => 只有名单内的队伍能看到。
+ *
+ * @param {number|string} [teamId] 当前登录队伍；不传时只返回对全体开放的赛事
  */
-async function listForStudent() {
+async function listForStudent(teamId) {
   // 按 id 升序：默认进入序号最小的赛事，避免多赛事时总是跳到最新建的那个
-  const rows = await db.query(
+  const base =
     'SELECT e.id, e.name, e.description, e.created_at, ' +
     '(SELECT COUNT(*) FROM stages s WHERE s.event_id = e.id AND s.status = 1) AS active_stage_count ' +
-    'FROM events e WHERE e.status = 1 ORDER BY e.id ASC'
+    'FROM events e WHERE e.status = 1 ';
+  const order = ' ORDER BY e.id ASC';
+
+  if (!teamId) {
+    // 未登录/无队伍：只暴露未设置白名单的赛事
+    return db.query(
+      base + 'AND NOT EXISTS (SELECT 1 FROM event_teams et WHERE et.event_id = e.id)' + order
+    );
+  }
+
+  // 白名单为空 或 本队在白名单内
+  return db.query(
+    base +
+      'AND (NOT EXISTS (SELECT 1 FROM event_teams et WHERE et.event_id = e.id) ' +
+      '     OR EXISTS (SELECT 1 FROM event_teams et2 WHERE et2.event_id = e.id AND et2.team_id = ?))' +
+      order,
+    [teamId]
   );
-  return rows;
 }
 
 /**
@@ -94,8 +115,8 @@ async function listForStudent() {
  * @param {number|string} [eventId] 学生选中的赛事；不传时回退到最近启用的赛事，
  *   以兼容旧链接与未做选择的首次访问。
  */
-async function currentForStudent(eventId) {
-  const events = await listForStudent();
+async function currentForStudent(eventId, teamId) {
+  const events = await listForStudent(teamId);
   if (!events.length) return { event: null, stages: [], events: [] };
 
   let event = null;
@@ -115,4 +136,94 @@ async function currentForStudent(eventId) {
   return { event, stages: rows.map(cfgMod.summarize), events };
 }
 
-module.exports = { list, listForStudent, getById, create, update, remove, currentForStudent };
+// ---------------- 赛事可见范围（队伍白名单） ----------------
+
+/** 查询某赛事的可见队伍 ID 列表；空数组表示对全体开放 */
+async function getVisibleTeams(eventId) {
+  const rows = await db.query(
+    'SELECT et.team_id, t.name AS team_name, t.leader_name ' +
+    'FROM event_teams et LEFT JOIN teams t ON t.id = et.team_id ' +
+    'WHERE et.event_id = ? ORDER BY t.name ASC',
+    [eventId]
+  );
+  return rows.map((r) => ({
+    teamId: Number(r.team_id),
+    teamName: r.team_name || ('队伍#' + r.team_id),
+    leaderName: r.leader_name || ''
+  }));
+}
+
+/** 查询某队伍可见的赛事 ID 列表 */
+async function getVisibleEvents(teamId) {
+  const rows = await db.query('SELECT event_id FROM event_teams WHERE team_id = ?', [teamId]);
+  return rows.map((r) => Number(r.event_id));
+}
+
+/**
+ * 覆盖式设置某赛事的可见队伍。
+ * @param {number[]} teamIds 空数组 = 对全体队伍开放
+ */
+async function setVisibleTeams(eventId, teamIds) {
+  await getById(eventId); // 赛事不存在时抛 404
+  const ids = [...new Set((teamIds || []).map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0))];
+
+  await db.transaction(async (conn) => {
+    await conn.execute('DELETE FROM event_teams WHERE event_id = ?', [eventId]);
+    for (const tid of ids) {
+      await conn.execute(
+        'INSERT INTO event_teams (event_id, team_id) VALUES (?, ?)',
+        [eventId, tid]
+      );
+    }
+  });
+
+  return { eventId: Number(eventId), teamIds: ids, restricted: ids.length > 0 };
+}
+
+/** 覆盖式设置某队伍可见的赛事 */
+async function setVisibleEvents(teamId, eventIds) {
+  const team = await db.queryOne('SELECT id FROM teams WHERE id = ?', [teamId]);
+  if (!team) throw new AppError('队伍不存在', 404, 404);
+  const ids = [...new Set((eventIds || []).map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0))];
+
+  await db.transaction(async (conn) => {
+    await conn.execute('DELETE FROM event_teams WHERE team_id = ?', [teamId]);
+    for (const eid of ids) {
+      await conn.execute(
+        'INSERT INTO event_teams (event_id, team_id) VALUES (?, ?)',
+        [eid, teamId]
+      );
+    }
+  });
+
+  return { teamId: Number(teamId), eventIds: ids };
+}
+
+/** 所有赛事的可见范围总览（管理端一次拉取） */
+async function visibilityOverview() {
+  const rows = await db.query(
+    'SELECT event_id, team_id FROM event_teams ORDER BY event_id, team_id'
+  );
+  const byEvent = {};
+  rows.forEach((r) => {
+    const k = String(r.event_id);
+    if (!byEvent[k]) byEvent[k] = [];
+    byEvent[k].push(Number(r.team_id));
+  });
+  return byEvent;
+}
+
+module.exports = {
+  list,
+  listForStudent,
+  getById,
+  create,
+  update,
+  remove,
+  currentForStudent,
+  getVisibleTeams,
+  getVisibleEvents,
+  setVisibleTeams,
+  setVisibleEvents,
+  visibilityOverview
+};

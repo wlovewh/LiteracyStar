@@ -84,10 +84,20 @@
 }
 
 .is-self .msg-bubble {
-  background: var(--c-selected);
-  color: var(--c-primary);
+  background: var(--c-primary);
+  color: #FFFFFF;
   border-top-right-radius: var(--r-tag);
 }
+
+/* 自己发送的消息：引用块与操作按钮需适配深色气泡 */
+.is-self .msg-quote {
+  background: rgba(255, 255, 255, 0.14);
+  border-left-color: rgba(255, 255, 255, 0.55);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.is-self .quote-author { color: #FFFFFF; }
+.is-self .msg-actions :deep(.el-button) { color: rgba(255, 255, 255, 0.85); }
 
 .is-other .msg-bubble {
   background: var(--c-white);

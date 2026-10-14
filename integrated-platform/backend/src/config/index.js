@@ -22,6 +22,13 @@ module.exports = {
   // 模拟竞赛平台库名（共用 questions 表，双向同步）
   competitionDb: process.env.COMPETITION_DB_NAME || 'info_literacy',
 
+  // 数据库备份
+  backup: {
+    // mysqldump 可执行文件路径；留空则从 PATH 查找，再回退到常见安装位置
+    mysqldumpPath: process.env.MYSQLDUMP_PATH || '',
+    dir: process.env.BACKUP_DIR || ''
+  },
+
   redis: {
     host: process.env.REDIS_HOST || 'localhost',
     port: toInt(process.env.REDIS_PORT, 6379),

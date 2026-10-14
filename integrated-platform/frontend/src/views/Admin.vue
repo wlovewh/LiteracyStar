@@ -189,6 +189,83 @@
             </el-form-item>
           </el-form>
         </div>
+
+        <!-- 数据库备份 -->
+        <div class="app-card" style="max-width: 900px; margin-top: 16px">
+          <div class="card-head">
+            <span class="card-title">数据库备份</span>
+            <div>
+              <el-button :loading="backupRunning" @click="runBackupNow">立即备份</el-button>
+              <el-button
+                type="danger"
+                plain
+                :disabled="!backupSelected.length"
+                @click="removeSelectedBackups"
+              >删除选中（{{ backupSelected.length }}）</el-button>
+            </div>
+          </div>
+
+          <el-form label-width="180px" style="margin-top: 12px">
+            <el-form-item label="启用定时备份">
+              <el-switch v-model="backupForm.enabled" :active-value="true" :inactive-value="false" />
+            </el-form-item>
+            <el-form-item label="每天备份时间">
+              <el-time-select
+                v-model="backupTime"
+                start="00:00"
+                step="00:30"
+                end="23:30"
+                placeholder="选择时间"
+                :disabled="!backupForm.enabled"
+                style="width: 160px"
+              />
+              <span class="text-sub" style="margin-left: 12px">按服务器时间执行</span>
+            </el-form-item>
+            <el-form-item label="保留份数">
+              <el-input-number v-model="backupForm.keep" :min="1" :max="90" />
+              <span class="text-sub" style="margin-left: 12px">超出份数的旧备份会自动删除</span>
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" :loading="savingBackup" @click="saveBackupSettings">保存备份设置</el-button>
+            </el-form-item>
+          </el-form>
+
+          <el-table
+            :data="backupList"
+            v-loading="backupLoading"
+            empty-text="暂无备份记录"
+            @selection-change="(rows) => (backupSelected = rows)"
+          >
+            <el-table-column type="selection" width="46" />
+            <el-table-column label="文件名" prop="filename" min-width="230" show-overflow-tooltip />
+            <el-table-column label="大小" width="110" align="center">
+              <template #default="{ row }">{{ formatSize(row.file_size) }}</template>
+            </el-table-column>
+            <el-table-column label="方式" width="90" align="center">
+              <template #default="{ row }">
+                <el-tag :type="row.trigger_by === 'auto' ? 'info' : 'primary'" effect="plain" size="small">
+                  {{ row.trigger_by === 'auto' ? '定时' : '手动' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="90" align="center">
+              <template #default="{ row }">
+                <el-tag :type="row.status === 'ok' ? 'primary' : 'danger'" effect="plain" size="small">
+                  {{ row.status === 'ok' ? '成功' : '失败' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="备份时间" width="170">
+              <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="130" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" :disabled="row.status !== 'ok'" @click="downloadBackup(row)">下载</el-button>
+                <el-button link type="danger" @click="removeOneBackup(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
       </el-tab-pane>
     </el-tabs>
 
@@ -269,7 +346,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, nextTick } from 'vue';
+import { ref, reactive, computed, onMounted, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import * as echarts from 'echarts';
 import { adminApi, authApi, resourceApi, chatApi, questionApi } from '@/api';
@@ -542,6 +619,123 @@ async function saveSettings() {
   }
 }
 
+// ---------------- 数据库备份 ----------------
+const backupForm = reactive({ enabled: false, hour: 3, minute: 0, keep: 7 });
+const backupTime = ref('03:00');
+const backupList = ref([]);
+const backupSelected = ref([]);
+const backupLoading = ref(false);
+const backupRunning = ref(false);
+const savingBackup = ref(false);
+
+/** 时间字符串 <-> 时分互转 */
+function timeToHM(s) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(s || ''));
+  if (!m) return { hour: 3, minute: 0 };
+  return { hour: Math.min(23, Number(m[1])), minute: Math.min(59, Number(m[2])) };
+}
+
+function hmToTime(h, m) {
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
+
+function formatSize(bytes) {
+  const n = Number(bytes || 0);
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+async function loadBackups() {
+  backupLoading.value = true;
+  try {
+    const r = await adminApi.backupOverview();
+    const cfg = r.config || {};
+    backupForm.enabled = !!cfg.enabled;
+    backupForm.hour = cfg.hour ?? 3;
+    backupForm.minute = cfg.minute ?? 0;
+    backupForm.keep = cfg.keep ?? 7;
+    backupTime.value = hmToTime(backupForm.hour, backupForm.minute);
+    backupList.value = r.list || [];
+  } catch (e) { /* 错误已提示 */ } finally {
+    backupLoading.value = false;
+  }
+}
+
+async function saveBackupSettings() {
+  savingBackup.value = true;
+  try {
+    const hm = timeToHM(backupTime.value);
+    await adminApi.saveBackupConfig({
+      enabled: backupForm.enabled,
+      hour: hm.hour,
+      minute: hm.minute,
+      keep: backupForm.keep
+    });
+    ElMessage.success('备份设置已保存');
+    await loadBackups();
+  } catch (e) { /* 错误已提示 */ } finally {
+    savingBackup.value = false;
+  }
+}
+
+async function runBackupNow() {
+  backupRunning.value = true;
+  try {
+    const r = await adminApi.runBackup();
+    ElMessage.success('备份完成：' + r.filename);
+    await loadBackups();
+  } catch (e) { /* 错误已提示 */ } finally {
+    backupRunning.value = false;
+  }
+}
+
+async function removeOneBackup(row) {
+  try {
+    await ElMessageBox.confirm('确定删除备份「' + row.filename + '」吗？删除后无法恢复。', '删除确认', { type: 'warning' });
+  } catch (e) { return; }
+  try {
+    await adminApi.removeBackup(row.id);
+    ElMessage.success('已删除');
+    await loadBackups();
+  } catch (e) { /* 错误已提示 */ }
+}
+
+async function removeSelectedBackups() {
+  const ids = backupSelected.value.map((r) => r.id);
+  if (!ids.length) return;
+  try {
+    await ElMessageBox.confirm('确定删除选中的 ' + ids.length + ' 条备份吗？删除后无法恢复。', '批量删除', { type: 'warning' });
+  } catch (e) { return; }
+  try {
+    const r = await adminApi.removeBackups(ids);
+    ElMessage.success('已删除 ' + r.removed + ' 条备份');
+    backupSelected.value = [];
+    await loadBackups();
+  } catch (e) { /* 错误已提示 */ }
+}
+
+/** 下载备份：带上令牌，用 blob 触发浏览器保存 */
+async function downloadBackup(row) {
+  try {
+    const res = await fetch(adminApi.backupDownloadUrl(row.filename), {
+      headers: { Authorization: 'Bearer ' + (localStorage.getItem('ip_token') || '') }
+    });
+    if (!res.ok) throw new Error('下载失败');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = row.filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    ElMessage.error('下载失败，请重试');
+  }
+}
+
 function formatDate(v) {
   if (!v) return '';
   return String(v).replace('T', ' ').slice(0, 16);
@@ -553,6 +747,7 @@ onMounted(() => {
   loadRooms();
   loadPhrases();
   loadSettings();
+  loadBackups();
 });
 </script>
 
@@ -570,4 +765,7 @@ onMounted(() => {
 .chart-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: var(--sp); }
 .chart-title { font-size: var(--f-sm); font-weight: 600; color: var(--c-primary); margin-bottom: 12px; }
 .chart-box { height: 280px; width: 100%; }
+
+.card-head { display: flex; align-items: center; justify-content: space-between; }
+.card-title { font-size: var(--f-md); font-weight: 600; color: var(--c-primary); }
 </style>

@@ -10,7 +10,7 @@
 
       <el-tabs v-model="activeTab" class="login-tabs">
         <el-tab-pane label="学生登录" name="student">
-          <el-form ref="studentFormRef" :model="studentForm" :rules="studentRules" label-position="top" @submit.prevent>
+          <el-form ref="studentFormRef" :model="studentForm" :rules="studentRules" label-position="top" @submit.prevent="handleStudentLogin" @keyup.enter="handleStudentLogin">
             <el-form-item label="学号" prop="studentId">
               <el-input v-model="studentForm.studentId" placeholder="请输入学号" size="large" clearable @keyup.enter="handleStudentLogin" />
             </el-form-item>
@@ -23,7 +23,7 @@
         </el-tab-pane>
 
         <el-tab-pane label="管理员登录" name="admin">
-          <el-form ref="adminFormRef" :model="adminForm" :rules="adminRules" label-position="top" @submit.prevent>
+          <el-form ref="adminFormRef" :model="adminForm" :rules="adminRules" label-position="top" @submit.prevent="handleAdminLogin" @keyup.enter="handleAdminLogin">
             <el-form-item label="账号" prop="username">
               <el-input v-model="adminForm.username" placeholder="请输入管理员账号" size="large" clearable @keyup.enter="handleAdminLogin" />
             </el-form-item>
@@ -75,6 +75,9 @@ const adminRules = {
 };
 
 async function handleStudentLogin() {
+  // 防止回车/连点重复提交：请求进行中直接忽略
+  if (loading.value) return;
+
   const valid = await studentFormRef.value.validate().catch(() => false);
   if (!valid) return;
 
@@ -91,6 +94,9 @@ async function handleStudentLogin() {
 }
 
 async function handleAdminLogin() {
+  // 防止回车/连点重复提交：请求进行中直接忽略
+  if (loading.value) return;
+
   const valid = await adminFormRef.value.validate().catch(() => false);
   if (!valid) return;
 

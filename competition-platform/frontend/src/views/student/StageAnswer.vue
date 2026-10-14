@@ -88,7 +88,11 @@
             v-for="(q, i) in questions"
             :key="q.questionId"
             class="sheet-item"
-            :class="{ 'is-current': i === currentIndex, 'is-answered': !!answers[q.questionId] }"
+            :class="{
+              'is-current': i === currentIndex,
+              'is-answered': !!answers[q.questionId],
+              'is-locked': !allowReturn && i < currentIndex
+            }"
             @click="jump(i)"
           >{{ i + 1 }}</div>
         </div>
@@ -164,6 +168,9 @@ const remaining = ref(0);
 const submitting = ref(false);
 
 // 实时排行榜 (project.md 8.2)
+// 已成功提交到服务端的题目（用于交卷前补交未提交的答案）
+const submittedIds = ref(new Set());
+
 const rankList = ref([]);
 const rankConnected = ref(false);
 const myScore = ref(0);
@@ -301,6 +308,7 @@ async function submitCurrent() {
       timeSpent: elapsedForCurrent()
     });
     feedback.value = res;
+    submittedIds.value.add(q.questionId);
     // 提交后立即拉取一次最新排名，无需等待下一个推送周期
     await refreshRankOnce();
   } catch (e) {
@@ -362,8 +370,15 @@ async function commitCurrent() {
 async function jump(i) {
   if (i === currentIndex.value) return;
 
-  // 不允许返回的赛制：跳题属于不可逆操作，必须先弹窗确认，防止误触
   if (!allowReturn.value) {
+    // 不允许返回：禁止跳到任何已做过的题（即往前跳），只能向后跳。
+    // 之前只弹确认框，用户点「确定」仍能回到上一题，与配置不符。
+    if (i < currentIndex.value) {
+      ElMessage.warning('本环节不允许返回上一题');
+      return;
+    }
+
+    // 向后跳题同样不可逆，先弹窗确认，防止误触
     try {
       await ElMessageBox.confirm(
         '本环节不允许返回，跳转到第 ' + (i + 1) + ' 题后将无法回到当前题目，确定继续吗？',
@@ -395,11 +410,45 @@ async function confirmSubmit() {
   await doSubmit();
 }
 
+/**
+ * 收集「已选择但未提交」的题目。
+ *
+ * 选中选项不会自动提交（避免误触锁定），因此最后一题选完没点「下一题」
+ * 就交卷时，答案会丢失并被判为未作答。
+ * 这里既尝试逐题补交，也会把清单随交卷请求一起发送——
+ * 倒计时到点那一刻的提交会被服务端以 403 拒绝，只有随交卷请求发送才兜得住。
+ */
+function collectPendingAnswers() {
+  const elapsed = Math.max(1, Math.round((Date.now() - questionStartedAt.value) / 1000));
+  return questions.value
+    .filter((q) => answers.value[q.questionId] && !submittedIds.value.has(q.questionId))
+    .map((q) => ({ questionId: q.questionId, answer: answers.value[q.questionId], timeSpent: elapsed }));
+}
+
+/** 尽力逐题补交；失败不阻断交卷（交卷请求里还会再带一次） */
+async function flushPendingAnswers(pending) {
+  for (const p of pending) {
+    try {
+      await examApi.answer(stageId, p);
+      submittedIds.value.add(p.questionId);
+    } catch (e) {
+      /* 超时被拒属正常，交卷时会补记 */
+    }
+  }
+  return pending.length;
+}
+
 async function doSubmit(auto = false) {
   if (submitting.value) return;
   submitting.value = true;
   try {
-    const res = await examApi.submit(stageId, { totalTime: totalTimeLimit - remaining.value });
+    // 先收集并尽力补交已选择但未提交的答案，避免被判未作答
+    const pending = collectPendingAnswers();
+    await flushPendingAnswers(pending);
+
+    // 用时交由服务端按 stage_attempts.started_at 计算；
+    // pendingAnswers 随交卷请求发送，兜住"超时导致单题提交被拒"的情况。
+    const res = await examApi.submit(stageId, { pendingAnswers: pending });
     if (timer) clearInterval(timer);
 
     // 接力模式：提示下一位队员 (7.2)
@@ -440,21 +489,41 @@ function elapsedForCurrent() {
   return Math.max(1, Math.round((Date.now() - questionStartedAt.value) / 1000));
 }
 
+/** 交卷截止时刻（墙上时钟），比每秒自减更可靠 */
+let deadlineAt = 0;
+
+/**
+ * 倒计时以「截止时刻」为准，而不是每秒自减计数器。
+ * 自减计数器在后台标签页会被浏览器降频，导致：
+ *   - 界面显示的时间比真实剩余时间多（用户以为还有 1 分钟，服务端已到点）
+ *   - 用时统计偏小
+ * 这里每秒用 Date.now() 重算剩余，标签页恢复时立即校正。
+ */
 function startTimer(seconds) {
   totalTimeLimit.value = seconds;
   remaining.value = seconds;
+  deadlineAt = Date.now() + seconds * 1000;
   markQuestionStart();
   if (timer) clearInterval(timer);
-  timer = setInterval(() => {
-    remaining.value -= 1;
-    if (remaining.value <= 0) {
-      remaining.value = 0;
+
+  const tick = () => {
+    const left = Math.max(0, Math.round((deadlineAt - Date.now()) / 1000));
+    remaining.value = left;
+    if (left <= 0) {
       clearInterval(timer);
       timer = null;
       ElMessage.warning('答题时间已结束，系统自动交卷');
       doSubmit(true);
     }
-  }, 1000);
+  };
+
+  timer = setInterval(tick, 1000);
+  tick();
+}
+
+/** 当前已用秒数（供展示与补交使用） */
+function elapsedSeconds() {
+  return Math.max(0, Math.round((Date.now() - (deadlineAt - totalTimeLimit.value * 1000)) / 1000));
 }
 
 async function load() {
@@ -466,10 +535,15 @@ async function load() {
 
     // 恢复已作答内容
     const map = {};
+    const done = new Set();
     questions.value.forEach((q) => {
-      if (q.userAnswer) map[q.questionId] = q.userAnswer;
+      if (q.userAnswer) {
+        map[q.questionId] = q.userAnswer;
+        done.add(q.questionId);
+      }
     });
     answers.value = map;
+    submittedIds.value = done;
 
     startTimer(data.availableTime || 600);
     markQuestionStart();
@@ -755,6 +829,11 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-tight);
+}
+
+.sheet-item.is-locked {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .sheet-item {

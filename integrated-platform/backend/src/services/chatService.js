@@ -101,7 +101,7 @@ async function attachQuoted(list) {
   if (!ids.length) return;
 
   const rows = await db.query(
-    'SELECT id, sender_name, content, message_type, created_at FROM chat_messages WHERE id IN (' + ids.map(() => '?').join(',') + ')',
+    'SELECT id, sender_name, sender_key, content, message_type, created_at FROM chat_messages WHERE id IN (' + ids.map(() => '?').join(',') + ')',
     ids
   );
   const byId = new Map(rows.map((r) => [Number(r.id), r]));
@@ -110,7 +110,7 @@ async function attachQuoted(list) {
     if (!m.quotedMessageId) return;
     const q = byId.get(Number(m.quotedMessageId));
     m.quoted = q
-      ? { id: Number(q.id), senderName: q.sender_name, content: q.content, messageType: q.message_type, createdAt: q.created_at }
+      ? { id: Number(q.id), senderName: q.sender_name, senderKey: q.sender_key || null, content: q.content, messageType: q.message_type, createdAt: q.created_at }
       : null; // 原消息已被删除或超出保留期
   });
 }
@@ -127,6 +127,8 @@ function normalizeMessage(row) {
     senderRole: row.sender_role,
     senderName: row.sender_name,
     senderStudentId: row.sender_student_id,
+    // 发送者稳定标识：前端据此判断"自己发的消息"，不依赖可改的昵称
+    senderKey: row.sender_key || null,
     messageType: row.message_type,
     content: row.content,
     extra: extra || null,
@@ -142,13 +144,14 @@ async function saveMessage(roomId, payload = {}) {
     ? payload.messageType : 'text';
 
   const res = await db.execute(
-    'INSERT INTO chat_messages (room_id, sender_role, sender_name, sender_student_id, message_type, content, extra, quoted_message_id) ' +
-    'VALUES (?,?,?,?,?,?,?,?)',
+    'INSERT INTO chat_messages (room_id, sender_role, sender_name, sender_student_id, sender_key, message_type, content, extra, quoted_message_id) ' +
+    'VALUES (?,?,?,?,?,?,?,?,?)',
     [
       roomId,
       payload.senderRole || 'member1',
       payload.senderName || '匿名',
       payload.senderStudentId || null,
+      payload.senderKey || null,
       type,
       payload.content || '',
       payload.extra ? JSON.stringify(payload.extra) : null,

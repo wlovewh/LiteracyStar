@@ -18,7 +18,11 @@ export const eventApi = {
   createStage: (id, data) => http.post('/events/' + id + '/stages', data),
   reorderStages: (id, ids) => http.put('/events/' + id + '/stages/reorder', { ids }),
   current: (eventId) => http.get('/events/current', { params: eventId ? { eventId } : {} }),
-  available: () => http.get('/events/available')
+  available: () => http.get('/events/available'),
+  // 赛事可见范围（队伍白名单）
+  visibleTeams: (id) => http.get('/events/' + id + '/teams'),
+  setVisibleTeams: (id, teamIds) => http.put('/events/' + id + '/teams', { teamIds }),
+  visibilityOverview: () => http.get('/events/visibility/overview')
 };
 
 // ---------------- 环节 ----------------
@@ -65,7 +69,10 @@ export const teamApi = {
     return http.post('/teams/import', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
   },
   templateUrl: '/api/teams/import/template',
-  exportUrl: '/api/teams/export'
+  exportUrl: '/api/teams/export',
+  // 该队伍可见的赛事（与赛事管理中的设置共用同一份数据）
+  visibleEvents: (id) => http.get('/teams/' + id + '/events'),
+  setVisibleEvents: (id, eventIds) => http.put('/teams/' + id + '/events', { eventIds })
 };
 
 // ---------------- 答题 ----------------

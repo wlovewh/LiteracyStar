@@ -1,5 +1,6 @@
 'use strict';
 const service = require('../services/teamService');
+const eventService = require('../services/eventService');
 const { parseBuffer, buildWorkbook, TEAM_TEMPLATE_HEADERS } = require('../utils/sheet');
 const { ok, asyncHandler, AppError } = require('../utils/response');
 
@@ -9,6 +10,15 @@ exports.create = asyncHandler(async (req, res) => ok(res, await service.create(r
 exports.update = asyncHandler(async (req, res) => ok(res, await service.update(req.params.id, req.body || {}), '保存成功'));
 exports.remove = asyncHandler(async (req, res) => ok(res, await service.remove(req.params.id), '删除成功'));
 exports.removeMany = asyncHandler(async (req, res) => ok(res, await service.removeMany(req.body.ids), '删除完成'));
+
+// 该队伍可见的赛事（赛事权限的另一入口，数据与赛事管理共用 event_teams 表）
+exports.visibleEvents = asyncHandler(async (req, res) =>
+  ok(res, await eventService.getVisibleEvents(req.params.id))
+);
+
+exports.setVisibleEvents = asyncHandler(async (req, res) =>
+  ok(res, await eventService.setVisibleEvents(req.params.id, (req.body || {}).eventIds), '可见范围已保存')
+);
 
 // 清空答题数据，允许队伍重新作答（stageId 可选，缺省清空全部环节）
 exports.clearAnswers = asyncHandler(async (req, res) => {

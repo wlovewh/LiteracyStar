@@ -100,6 +100,27 @@ CREATE TABLE teams (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='队伍表';
 
 -- -------------------------------------------------------------
+-- event_teams 赛事可见范围表
+-- 说明：默认所有启用赛事对所有启用队伍可见（白名单为空 = 不限制）。
+--       一旦某赛事配置了白名单，则只有名单内的队伍能看到该赛事。
+--       在「赛事管理」中按赛事勾选队伍，也可在「队伍管理」中按队伍勾选赛事，
+--       两个入口操作的是同一张关联表。
+-- -------------------------------------------------------------
+DROP TABLE IF EXISTS event_teams;
+CREATE TABLE event_teams (
+  id         INT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
+  event_id   INT UNSIGNED NOT NULL                COMMENT '赛事ID',
+  team_id    INT UNSIGNED NOT NULL                COMMENT '队伍ID',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_event_team (event_id, team_id),
+  KEY idx_et_event (event_id),
+  KEY idx_et_team (team_id),
+  CONSTRAINT fk_et_event FOREIGN KEY (event_id) REFERENCES events (id) ON DELETE CASCADE,
+  CONSTRAINT fk_et_team FOREIGN KEY (team_id) REFERENCES teams (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='赛事可见范围表';
+
+-- -------------------------------------------------------------
 -- answers 答题记录表
 -- -------------------------------------------------------------
 DROP TABLE IF EXISTS answers;

@@ -150,6 +150,8 @@ function init(server) {
             senderRole: identity.role === 'guest' ? 'member1' : identity.role,
             senderName: identity.name,
             senderStudentId: msg.studentId || null,
+            // senderKey 由服务端根据连接身份写入，不采用客户端传值
+            senderKey: identity.key,
             messageType: msg.messageType || 'text',
             content: msg.content || '',
             extra: msg.extra || null,

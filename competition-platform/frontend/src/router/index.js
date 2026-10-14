@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router';
-import { getToken, getUser } from '@/api/http';
+import { getToken, getUser, setAuth, clearAuth } from '@/api/http';
 
 const routes = [
   // ---------------- 前台 ----------------
@@ -49,8 +49,48 @@ const router = createRouter({
   scrollBehavior: () => ({ top: 0 })
 });
 
-router.beforeEach((to, from, next) => {
+/**
+ * 会话有效性校验（仅执行一次）。
+ *
+ * 之前只检查 localStorage 里有没有 token，从不验证它是否还有效。
+ * 令牌过期（默认 12 小时）或服务端重启换密钥后，页面仍显示缓存的
+ * 身份信息（例如"系统管理员"），直到某个接口返回 401 才退出——
+ * 表现为"过一会儿重新访问首页默认变成系统管理员"。
+ */
+let sessionChecked = false;
+let sessionPromise = null;
+
+async function ensureSessionValid() {
+  if (sessionChecked) return;
+  if (sessionPromise) return sessionPromise;
+
+  const token = getToken();
+  if (!token) { sessionChecked = true; return; }
+
+  sessionPromise = (async () => {
+    try {
+      const { authApi } = await import('@/api');
+      const me = await authApi.me();
+      // 以服务端返回的身份为准，覆盖可能过期的本地缓存
+      if (me) setAuth(token, me);
+    } catch (e) {
+      // 401/403 表示会话已失效：清掉本地缓存，回到登录页
+      const status = e && e.response && e.response.status;
+      if (status === 401 || status === 403) clearAuth();
+    } finally {
+      sessionChecked = true;
+      sessionPromise = null;
+    }
+  })();
+
+  return sessionPromise;
+}
+
+router.beforeEach(async (to, from, next) => {
   document.title = (to.meta.title ? to.meta.title + ' - ' : '') + '信息素养大赛模拟竞赛平台';
+
+  // 非公开页面先校验会话，避免展示过期身份
+  if (!to.meta.public) await ensureSessionValid();
 
   const token = getToken();
   const user = getUser();

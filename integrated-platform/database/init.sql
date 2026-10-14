@@ -114,6 +114,25 @@ CREATE TABLE quick_phrases (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='快速短语表';
 
 -- -------------------------------------------------------------
+-- 数据库备份记录表
+-- 说明：记录每次自动/手动备份的文件信息，供管理端查看与删除。
+--       备份文件本身存放在 backend/backups/ 目录，此表只存元数据。
+-- -------------------------------------------------------------
+DROP TABLE IF EXISTS backup_records;
+CREATE TABLE backup_records (
+  id          INT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
+  filename    VARCHAR(200) NOT NULL                COMMENT '备份文件名',
+  file_size   BIGINT UNSIGNED NOT NULL DEFAULT 0   COMMENT '文件大小(字节)',
+  scope       VARCHAR(50) NOT NULL DEFAULT 'all'   COMMENT '备份范围',
+  trigger_by  VARCHAR(20) NOT NULL DEFAULT 'auto'  COMMENT 'auto=定时 manual=手动',
+  status      VARCHAR(20) NOT NULL DEFAULT 'ok'    COMMENT 'ok=成功 failed=失败',
+  message     VARCHAR(500) DEFAULT NULL            COMMENT '失败原因或备注',
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_backup_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据库备份记录表';
+
+-- -------------------------------------------------------------
 -- 平台设置表（题库检索开关、聊天保留时间等）
 -- -------------------------------------------------------------
 DROP TABLE IF EXISTS platform_settings;

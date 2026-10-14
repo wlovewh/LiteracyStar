@@ -97,5 +97,13 @@ export const adminApi = {
   dashboard: () => http.get('/admin/dashboard'),
   stats: (days) => http.get('/admin/stats', { params: { days } }),
   settings: () => http.get('/admin/settings'),
-  purgeMessages: () => http.post('/admin/purge-messages')
+  purgeMessages: () => http.post('/admin/purge-messages'),
+
+  // 数据库备份
+  backupOverview: () => http.get('/admin/backup'),
+  saveBackupConfig: (data) => http.put('/admin/backup/config', data),
+  runBackup: () => http.post('/admin/backup/run'),
+  removeBackup: (id) => http.delete('/admin/backup/' + id),
+  removeBackups: (ids) => http.post('/admin/backup/batch-delete', { ids }),
+  backupDownloadUrl: (filename) => '/platform-api/admin/backup/download/' + encodeURIComponent(filename)
 };

@@ -147,6 +147,13 @@ async function resetStageState(stageId) {
   const memberTeamStage = await api('GET', '/api/stages/' + stages.json.data[1].id + '/ready', { token: memberToken });
   check('队员无法进入团队环节', memberTeamStage.status === 403, memberTeamStage.json);
 
+  // 该环节可能在上次运行中已开考并交卷；清理计时记录，保证本次从零开始。
+  // （服务端按首次进入时间强制时限，残留记录会让本环节立即判定超时）
+  {
+    const db = require('../src/config/db');
+    await db.execute('DELETE FROM stage_attempts WHERE stage_id = ?', [stage1.id]);
+  }
+
   const start = await api('POST', '/api/stages/' + stage1.id + '/start', { token: leaderToken });
   check('开始答题返回 10 题', start.json?.data?.questions?.length === 10, start.json?.data?.questions?.length);
   const qs = start.json?.data?.questions || [];

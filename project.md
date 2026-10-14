@@ -819,7 +819,7 @@ https://github.com/wlovewh/LiteracyStar.git
 
 ---
 
-**文档结束。**
+
 
 # 信息素养大赛综合平台 — 追加设计文档
 
@@ -1867,5 +1867,160 @@ CREATE TABLE stage_attempts (
 - **赛事序号不回收**：删除赛事后自增 ID 继续递增（如现有 id=1、id=3，id=2 已删除）。这是 MySQL 的预期行为，如需连续序号须重排 `stages` / `stage_papers` / `answers` / `stage_scores` / `stage_attempts` 等所有关联外键，风险较高，当前保持现状。
 - **本地与生产数据差异**：本地库仅有赛事 id=1；生产库另有真实学生账号（如 `25101802030` 蒋先涛，密码即学号），本地测试账号为 `2026001`–`2026009`。
 - **Redis 降级**：本地开发环境 Redis 不可用时自动降级为内存实现，生产环境使用真实 Redis。
+
+---
+
+# 第十七章 第九轮修复记录
+
+本轮针对测试验收反馈的 7 项问题与 1 项新增需求进行修复。所有改动已部署至生产环境并完成公网验收。
+
+## 17.1 问题与修复
+
+### ① 不允许返回的赛制仍能返回上一题
+
+**现象**：开启「允许跳题 + 不允许返回」后，点击答题卡上已做过的题号，仍可回到上一题（虽然答案改不了）。
+
+**原因**：`go(-1)` 有 `allowReturn` 守卫，但答题卡的 `jump(i)` 只对「不允许返回」弹了一个确认框——用户点「确定」照样跳回去，守卫形同虚设。
+
+**修复**（`StageAnswer.vue`）：
+- `jump(i)` 在 `allowReturn=false` 时，若目标题号小于当前题号，直接拦截并提示「本环节不允许返回上一题」；向后跳题仍弹确认框（跳题本身不可逆）。
+- 答题卡上已锁定的题号加 `.is-locked` 样式（降低透明度 + `not-allowed` 光标），给出视觉反馈。
+
+### ② 首页默认变成「队员系统管理员」
+
+**现象**：过一会儿重新访问首页，身份显示为「队员系统管理员」。
+
+**原因**：路由守卫只检查 `localStorage` 里有没有 token，**从不验证它是否还有效**。令牌过期（默认 12 小时）或服务端重启更换密钥后，页面仍展示缓存的旧身份，直到某个接口返回 401 才退出。「系统管理员」是竞赛平台内置管理员的名称（`authService.js` 中 `ADMIN_USERNAME` 的 `name`）。
+
+**修复**（`router/index.js`）：新增 `ensureSessionValid()`，在进入非公开页面时调用一次 `/auth/me`：
+- 成功：以服务端返回的身份覆盖本地缓存（避免昵称/角色过期）。
+- 401/403：清除本地凭证，回到登录页。
+- 网络异常：不清除（避免误伤离线用户）。
+
+### ③ 回车登录时好时坏
+
+**现象**：回车登录一会儿能用一会儿不能用。
+
+**原因**：两个问题叠加——
+1. `@keyup.enter` 只绑在 `<el-input>` 上，Element Plus 的包装层在部分场景下不冒泡；
+2. 回车连按时，第一次请求还在飞行中，第二次又进入处理函数重新 `validate()`，与首次请求相互干扰。
+
+**修复**（`Login.vue`）：
+- 在 `<el-form>` 上补 `@submit.prevent` 与 `@keyup.enter`（表单级兜底），保留每个输入框上的绑定。
+- `handleStudentLogin` / `handleAdminLogin` 开头加 `if (loading.value) return;`，请求进行中直接忽略重复触发。
+
+### ④ 赛事可见范围（新增功能）
+
+**需求**：可设置哪些队伍能看到哪些赛事。
+
+**方案**：新增关联表 `event_teams(event_id, team_id)`，语义为**白名单**：
+- 某赛事在表中**没有记录** → 对全体启用队伍开放（保持现有行为，不打扰已有数据）；
+- 一旦配置了记录 → 只有名单内的队伍可见。
+
+**为什么选这个方案**：默认开放意味着存量赛事无需任何迁移即可继续工作；按赛事配置比按队伍配置更贴合「这个赛事给谁看」的实际问法；两个入口（赛事管理 / 队伍管理）操作同一张表，管理员从哪边进都能改。
+
+**改动**：
+- 数据库：`init.sql` 新增 `event_teams` 表（含 `ON DELETE CASCADE` 外键）。
+- 服务：`eventService.listForStudent(teamId)` 按白名单过滤；新增 `getVisibleTeams` / `getVisibleEvents` / `setVisibleTeams` / `setVisibleEvents` / `visibilityOverview`。
+- 接口：`GET|PUT /events/:id/teams`、`GET|PUT /teams/:id/events`、`GET /events/visibility/overview`（该路由必须声明在 `/:id` 之前，否则被抢先匹配）。
+- 前端：赛事管理新增「可见范围」列与配置弹窗（支持按名称/学号搜索、全选、清空）。
+
+### ⑤ 选中的答案被判未作答 / 提前弹出「答题时间已到」
+
+**现象**：明明选了答案且正确，最后显示未作答；剩余 1 分钟时就弹出「答题时间已到」。
+
+**原因**（三个独立问题）：
+1. **选中的答案丢失**：选中选项不会自动提交（避免误触锁定），最后一题选完没点「下一题」就交卷，答案从未落库；`submitStage` 会把所有无 `answers` 记录的问题写成 `is_correct=2`（未作答）。
+2. **超时竞态**：倒计时到点时单题提交被服务端 403 拒绝，已选答案同样丢失。
+3. **倒计时提前**：前端用每秒自减的计数器，浏览器在后台标签页会降频，导致界面显示的时间比真实剩余时间多——用户以为还有 1 分钟，服务端其实已到点。
+
+**修复**：
+- `StageAnswer.vue`：倒计时改为**墙上时钟锚定**（记录 `deadlineAt`，每秒用 `Date.now()` 重算剩余），标签页恢复时立即校正。
+- `StageAnswer.vue`：新增 `collectPendingAnswers()` / `flushPendingAnswers()`，交卷前先收集「已选择但未提交」的答案，既逐题补交，也随交卷请求一起发送。
+- `examService.submitStage`：新增 `pendingAnswers` 参数，在汇总分数前先把这些答案判分入库（已提交过的不重复计分）。
+- 前端提交时不再传 `totalTime`（改用服务端计算，见 ⑥）。
+
+**结论**：「最后一题选了没提交」确实会丢分，已修复；「提前弹窗」确认是前端倒计时漂移，已改为墙上时钟。两项均已修复。
+
+### ⑥ 用时统计错误（显示 08:09，实际用了 10 分钟）
+
+**原因**：交卷时前端发送 `totalTime: totalTimeLimit - remaining`，即**由每秒自减的计数器算出**。该计数器在后台标签页被降频，实测比真实用时少 1~2 分钟（10 分钟显示成 08:09）。
+
+**修复**（`examService.js`）：
+- 用时以 `stage_attempts.started_at` 为唯一依据，**完全忽略前端传值**（前端仍可传，仅作无记录时的兜底）。
+- `remainingSeconds()` 增加返回 `elapsed`（真实经过时间）。**注意**：不能用 `limit - remaining` 推导——超时后 `remaining` 被截断为 0，会得到「恰好用完时限」的错误结果（如实际 100 秒却记成 30 秒）。这是本轮修出的第二个隐藏 bug。
+- 接力模式下再扣除前面队员的节余时间。
+
+### ⑦ 聊天室气泡方向 + 图片粘贴
+
+**气泡方向**：`rowClass(m)` 用 `m.senderName === myName` 判断是否自己发送。昵称改为可编辑后，服务端会规范化名称，比对随之失效——所有消息都落到 `is-other`（左侧）。
+
+**修复**：
+- 数据库：`chat_messages` 新增 `sender_key VARCHAR(64)` 列与索引。
+- 后端：`saveMessage` 写入 `sender_key`，**值由 WebSocket 连接身份（`identity.key`）在服务端注入，不采用客户端传值**；`normalizeMessage` 与引用消息一并返回。
+- 前端：新增 `isMine(m)`，优先比对 `senderKey`，历史消息无该字段时回落到昵称。
+- 样式：自己发送的气泡恢复为**深蓝底白字**（`--c-primary` = `#1A3A5C`），引用块与操作按钮适配深色背景。
+
+**Ctrl+V 粘贴上传**：新增 `onPaste` 监听（页面级，`onMounted` 注册 / `onBeforeUnmount` 注销），从剪贴板取出图片文件直接上传发送，不经过文件选择框。输入框占位提示同步更新。
+
+### ⑧ 数据库备份（新增功能）
+
+**需求**：在管理后台的平台设置中配置每日备份时间，可查看备份数据，并可删除历史久远的备份。
+
+**实现**（综合平台）：
+- 数据库：新增 `backup_records` 表记录每次备份的元数据（文件名、大小、方式、状态、时间）。
+- 服务 `backupService.js`：
+  - 优先调用 `mysqldump`（`--single-transaction --routines --events`）；
+  - **降级方案**：`mysqldump` 不存在时（常见于 Windows 开发机）改用内置纯 Node 导出（分批读取、正确处理 NULL/日期/Buffer/转义），保证备份功能始终可用；
+  - `MYSQLDUMP_PATH` 可显式指定可执行文件路径，未指定时按常见安装位置回退；
+  - 定时调度用进程内 `setInterval` 每分钟检查一次，到点触发（不引入额外依赖，服务重启后按配置自动恢复）；
+  - 超出「保留份数」的旧备份自动清理。
+- 接口：`GET /admin/backup`、`PUT /admin/backup/config`、`POST /admin/backup/run`、`GET /admin/backup/download/:filename`、`DELETE /admin/backup/:id`、`POST /admin/backup/batch-delete`。
+- 前端：平台设置页新增备份配置（启用开关、时间选择器、保留份数）与备份记录表格（下载 / 删除 / 批量删除）。
+- 参数边界：小时 0–23、分钟 0–59、保留份数 1–90，越界自动收敛。
+
+## 17.2 附带修复
+
+**已交卷的答题记录会永久锁定学生**：`stage_attempts` 的 `started_at` 用 `ON DUPLICATE KEY UPDATE` 只更新 `updated_at`，设计初衷是「刷新页面不重置倒计时」。但交卷后该记录仍在，学生（或管理员清空答题数据后）再次进入时，服务端按首次进入时间判定为已超时，无法再作答。
+
+**修复**：`startExam` 的 upsert 改为——`submitted_at IS NULL` 时保持 `started_at`（刷新不重置），**已交卷则重置计时并清空 `submitted_at`**，允许重新开始一轮。
+
+## 17.3 测试
+
+新增测试脚本：
+- `competition-platform/backend/scripts/round9-test.js`（20 项）：服务端用时权威性、补交已选未提交答案、赛事可见范围、不可返回赛制配置、会话校验。
+- `integrated-platform/backend/scripts/round9-test.js`（17 项）：备份配置读写与边界收敛、手动备份、下载内容校验、删除、权限。
+- `competition-platform/backend/scripts/rebuild-ranks.js`：从 `stage_scores` 重建 Redis 排行榜 ZSET（**必须先 `await redis.init()`**，否则静默降级为内存实现，脚本报「成功」但真实 Redis 中没有任何键）。
+
+全平台回归 **310 项全部通过**：
+
+| 平台 | 脚本 | 结果 |
+| --- | --- | --- |
+| 竞赛 | test-logic / audit-spec / smoke-test | 28 / 68 / 43 |
+| 竞赛 | stage-test / event-select / event-switch | 10 / 11 / 11 |
+| 竞赛 | round8-test / round9-test | 21 / 20 |
+| 综合 | smoke-test / ws-test / admin-test | 31 / 9 / 15 |
+| 综合 | quote-test / round8-test / round9-test | 10 / 16 / 17 |
+
+生产环境公网验收 21 项通过，超时链路专项验证 7 项通过。
+
+## 17.4 数据事故与恢复记录
+
+在第八轮收尾清理测试数据时，清理脚本使用了过宽的条件（`DELETE FROM answers WHERE stage_id = 2`），误删了**环节 2 的全部答题数据**（19 条 `answers`、3 条 `stage_scores`），并清空了 Redis 中全部 `stage:*` 排行键（影响所有环节）。
+
+**恢复过程**：
+1. 确认 MySQL 已开启 binlog 且为 `ROW` 格式，用 `mysqlbinlog --base64-output=DECODE-ROWS -v` 提取被删行的全部列值；
+2. 逐条还原环节 2 的 17 条真实答题记录（17 队 36 分、23 队 26 分）与 2 条成绩记录；
+3. **排除**本轮 e2e 测试写入的 1 条（学号 `25101802030`，本就不该存在）；
+4. 用 `rebuild-ranks.js` 重建全部 13 个 Redis 排行键；
+5. 逐环节核对答题/成绩数量与删除前一致。
+
+**教训**：清理脚本必须带精确条件（如 `AND team_id = ? AND student_id = ?`），禁止按 `stage_id` 批量删除；删除生产数据前必须先确认影响范围。
+
+## 17.5 已知事项（补充）
+
+- **赛事序号不回收**：见 16.6，保持现状。
+- **备份文件位置**：`integrated-platform/backend/backups/`，已加入 `.gitignore`；`backup_records` 表只存元数据。
+- **mysqldump 依赖**：生产服务器已具备；若部署环境缺失，备份自动降级为内置导出，功能不受影响。
 
 **文档结束。**

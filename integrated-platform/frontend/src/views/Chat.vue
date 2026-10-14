@@ -216,7 +216,7 @@
               type="textarea"
               :rows="2"
               resize="none"
-              placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+              placeholder="输入消息，Enter 发送，Shift+Enter 换行，Ctrl+V 粘贴图片"
               @keydown.enter.exact.prevent="sendText"
             />
             <el-button
@@ -353,14 +353,25 @@ function formatTime(v) {
   return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
 }
 
+/**
+ * 判断一条消息是否为自己发送。
+ * 优先用服务端写入的 senderKey（稳定、不受昵称修改影响）；
+ * 历史消息没有 senderKey 时回落到昵称比对。
+ */
+function isMine(m) {
+  if (!m) return false;
+  if (m.senderKey && myKey.value) return m.senderKey === myKey.value;
+  return m.senderName === myName.value;
+}
+
 function rowClass(m) {
   if (m.messageType === 'system') return 'is-system';
-  return m.senderName === myName.value ? 'is-self' : 'is-other';
+  return isMine(m) ? 'is-self' : 'is-other';
 }
 
 function myAnswerOf(questionId) {
   const mine = messages.value.filter(
-    (m) => m.messageType === 'answer' && Number(m.extra?.questionId) === Number(questionId) && m.senderName === myName.value
+    (m) => m.messageType === 'answer' && Number(m.extra?.questionId) === Number(questionId) && isMine(m)
   );
   return mine.length ? mine[mine.length - 1].extra.answer : null;
 }
@@ -586,6 +597,16 @@ function imageUrlOf(m) {
 async function onImagePicked(e) {
   const file = e.target.files && e.target.files[0];
   if (!file) return;
+  await uploadAndSendImage(file);
+}
+
+/** 上传图片并作为消息发送 */
+async function uploadAndSendImage(file) {
+  if (!room.value) return;
+  if (!/^image\/(png|jpe?g|gif|webp)$/i.test(file.type)) {
+    ElMessage.warning('仅支持 PNG / JPG / GIF / WEBP 图片');
+    return;
+  }
   if (file.size > 5 * 1024 * 1024) {
     ElMessage.warning('图片不能超过 5MB');
     return;
@@ -597,7 +618,7 @@ async function onImagePicked(e) {
       type: 'message',
       messageType: 'image',
       content: r.url,
-      extra: { url: r.url, name: file.name, size: file.size },
+      extra: { url: r.url, name: file.name || '粘贴的图片', size: file.size },
       quotedMessageId: quoted.value ? quoted.value.id : null
     });
     quoted.value = null;
@@ -605,6 +626,25 @@ async function onImagePicked(e) {
     /* 错误已提示 */
   } finally {
     uploading.value = false;
+  }
+}
+
+/**
+ * Ctrl+V 粘贴上传图片。
+ * 从剪贴板取出图片文件直接发送，不经过文件选择框。
+ */
+function onPaste(e) {
+  if (!room.value) return;
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  for (const it of items) {
+    if (it.kind === 'file' && /^image\//.test(it.type)) {
+      const file = it.getAsFile();
+      if (file) {
+        e.preventDefault();
+        uploadAndSendImage(file);
+        return;
+      }
+    }
   }
 }
 
@@ -690,6 +730,9 @@ async function sendIncomingQuestion() {
 watch(() => route.query.questionId, (v) => { if (v && room.value) sendIncomingQuestion(); });
 
 onMounted(async () => {
+  // Ctrl+V 粘贴图片：在页面任意位置粘贴都能上传
+  window.addEventListener('paste', onPaste);
+
   // 支持 URL 直接带邀请码进入
   if (route.query.invite) {
     inviteCode.value = String(route.query.invite);
@@ -712,6 +755,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   // 切到其他页面时保留会话：只断开连接并暂停计时，不清除房间状态。
   // 房间状态已写入 localStorage，返回本页会自动恢复。
+  window.removeEventListener('paste', onPaste);
   disconnect();
   pauseTimer();
   saveSession();
