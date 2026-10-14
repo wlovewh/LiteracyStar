@@ -87,7 +87,32 @@ async function recentMessages(roomId, limit = config.chat.recentMessageLimit) {
     'SELECT * FROM chat_messages WHERE room_id = ?' + clause + ' ORDER BY id DESC LIMIT ' + lim,
     [roomId]
   );
-  return rows.reverse().map(normalizeMessage);
+  const list = rows.reverse().map(normalizeMessage);
+  await attachQuoted(list);
+  return list;
+}
+
+/**
+ * 为引用了其他消息的记录补充被引用内容 (project.md 10.1)
+ * 前端需要展示「谁说了什么」，只给 id 无法渲染。
+ */
+async function attachQuoted(list) {
+  const ids = [...new Set(list.map((m) => m.quotedMessageId).filter(Boolean))];
+  if (!ids.length) return;
+
+  const rows = await db.query(
+    'SELECT id, sender_name, content, message_type, created_at FROM chat_messages WHERE id IN (' + ids.map(() => '?').join(',') + ')',
+    ids
+  );
+  const byId = new Map(rows.map((r) => [Number(r.id), r]));
+
+  list.forEach((m) => {
+    if (!m.quotedMessageId) return;
+    const q = byId.get(Number(m.quotedMessageId));
+    m.quoted = q
+      ? { id: Number(q.id), senderName: q.sender_name, content: q.content, messageType: q.message_type, createdAt: q.created_at }
+      : null; // 原消息已被删除或超出保留期
+  });
 }
 
 /** 统一消息结构，extra 解析为对象 */
@@ -133,6 +158,7 @@ async function saveMessage(roomId, payload = {}) {
 
   const row = await db.queryOne('SELECT * FROM chat_messages WHERE id = ?', [res.insertId]);
   const msg = normalizeMessage(row);
+  await attachQuoted([msg]);
 
   // 通过 Redis Pub/Sub 广播（内存降级时为本进程投递）
   await redis.publish('chat:room:' + roomId, JSON.stringify({ type: 'message', message: msg }));

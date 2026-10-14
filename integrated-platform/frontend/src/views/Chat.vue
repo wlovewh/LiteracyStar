@@ -154,7 +154,13 @@
             <!-- 普通文本 -->
             <template v-else>
               <div class="msg-bubble">
-                <div v-if="m.quotedMessageId" class="msg-quote">引用了一条消息</div>
+                <div v-if="m.quotedMessageId" class="msg-quote">
+                <template v-if="m.quoted">
+                  <span class="quote-author">{{ m.quoted.senderName }}：</span>
+                  <span class="quote-text">{{ quotePreview(m.quoted) }}</span>
+                </template>
+                <span v-else class="quote-text">原消息已被删除</span>
+              </div>
                 {{ m.content }}
               </div>
             </template>
@@ -237,6 +243,46 @@ let ws = null;
 let reconnectTimer = null;
 let heartbeatTimer = null;
 
+/**
+ * 聊天室会话持久化。
+ * 用户切到其他页面再回来时自动恢复，只有主动点「离开聊天室」才清除。
+ * 默认保持 24 小时，超时后需重新进入。
+ */
+const SESSION_KEY = 'chat_session';
+const SESSION_TTL = 24 * 60 * 60 * 1000;
+
+function saveSession() {
+  if (!room.value) return;
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      room: room.value,
+      memberKey: myKey.value,
+      memberName: myName.value,
+      joinedAt: Date.now()
+    }));
+  } catch (e) { /* 隐私模式下写入失败可忽略 */ }
+}
+
+function loadSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    if (!s || !s.room || !s.room.id) return null;
+    if (Date.now() - Number(s.joinedAt || 0) > SESSION_TTL) {
+      localStorage.removeItem(SESSION_KEY);
+      return null;
+    }
+    return s;
+  } catch (e) {
+    return null;
+  }
+}
+
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); } catch (e) { /* 忽略 */ }
+}
+
 // 计时器 (10.2)
 const seconds = ref(0);
 const timerRunning = ref(false);
@@ -312,28 +358,36 @@ async function joinTeamRoom() {
   }
 }
 
-/** 建立身份：登录用户用密钥身份，否则用访客身份（localStorage 记住） */
+/**
+ * 建立身份：登录用户用密钥身份，否则用访客身份（localStorage 记住）。
+ * 昵称优先级：本次输入 > 已保存的昵称 > 登录身份名 / 访客。
+ */
 function resolveIdentity(roomId) {
-  if (auth.isLoggedIn) {
-    return { key: 'key-' + auth.user.keyId, name: myName.value || auth.roleLabel };
-  }
+  const typed = (nickname.value || '').trim();
   const saved = getGuest(roomId);
+
+  if (auth.isLoggedIn) {
+    const name = typed || (saved && saved.name) || auth.roleLabel;
+    setGuest(roomId, { key: 'key-' + auth.user.keyId, name });
+    return { key: 'key-' + auth.user.keyId, name };
+  }
+
   const key = (saved && saved.key) || 'guest-' + Math.random().toString(36).slice(2, 10);
-  const name = myName.value || (saved && saved.name) || '访客';
+  const name = typed || (saved && saved.name) || '访客';
   setGuest(roomId, { key, name });
   return { key, name };
 }
 
-async function enterRoom(r) {
+async function enterRoom(r, opts = {}) {
   room.value = r;
-  myName.value = (nickname.value || '').trim() || '访客';
   const identity = resolveIdentity(r.id);
   myKey.value = identity.key;
   myName.value = identity.name;
 
   await Promise.all([loadMessages(), loadPhrases(), loadOnline()]);
   connect();
-  ElMessage.success('已进入聊天室');
+  saveSession();
+  if (!opts.silent) ElMessage.success('已进入聊天室');
 }
 
 async function loadMessages() {
@@ -379,10 +433,15 @@ function copyInvite() {
 function leaveRoom() {
   disconnect();
   pauseTimer();
+  clearSession();
+  resetTimer();
   room.value = null;
   messages.value = [];
   onlineMembers.value = [];
   searchResults.value = [];
+  quoted.value = null;
+  draft.value = '';
+  ElMessage.success('已离开聊天室');
 }
 
 // ---------------- WebSocket ----------------
@@ -492,6 +551,15 @@ function quote(m) {
   quoted.value = m;
 }
 
+/** 引用摘要：题目/图片等非文本消息给出可读描述 */
+function quotePreview(q) {
+  if (!q) return '';
+  if (q.messageType === 'question') return '[题目] ' + String(q.content || '').slice(0, 40);
+  if (q.messageType === 'answer') return '[答案] ' + String(q.content || '').slice(0, 40);
+  if (q.messageType === 'system') return String(q.content || '').slice(0, 40);
+  return String(q.content || '').slice(0, 40);
+}
+
 async function removeMessage(m) {
   try {
     await chatApi.deleteMessage(m.id);
@@ -549,11 +617,25 @@ onMounted(async () => {
     joinMode.value = 'invite';
   }
   if (route.query.teamId) teamId.value = Number(route.query.teamId);
+
+  // 恢复上次的聊天室会话（24 小时内且未主动离开）
+  const s = loadSession();
+  if (s) {
+    room.value = s.room;
+    myKey.value = s.memberKey || '';
+    myName.value = s.memberName || '访客';
+    await Promise.all([loadMessages(), loadPhrases(), loadOnline()]);
+    connect();
+    if (route.query.questionId) await sendIncomingQuestion();
+  }
 });
 
 onBeforeUnmount(() => {
+  // 切到其他页面时保留会话：只断开连接并暂停计时，不清除房间状态。
+  // 房间状态已写入 localStorage，返回本页会自动恢复。
   disconnect();
   pauseTimer();
+  saveSession();
 });
 </script>
 
@@ -568,6 +650,27 @@ onBeforeUnmount(() => {
   font-size: var(--f-lg); font-weight: 600; color: var(--c-primary);
   letter-spacing: 3px; margin: 6px 0;
 }
+.msg-quote {
+  font-size: var(--f-xs);
+  color: var(--c-text-sub);
+  background: var(--c-bg);
+  border-left: 3px solid var(--c-primary-2);
+  border-radius: var(--r-tag);
+  padding: 5px 10px;
+  margin-bottom: 6px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.quote-author {
+  font-weight: 600;
+  color: var(--c-primary);
+}
+
+.quote-text {
+  opacity: 0.85;
+}
+
 .search-banner {
   display: flex; align-items: center; justify-content: space-between;
   background: var(--c-selected); color: var(--c-primary);

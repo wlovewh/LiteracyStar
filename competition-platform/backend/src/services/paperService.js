@@ -5,6 +5,7 @@ const cfgMod = require('../config/stageConfig');
 const scoring = require('./scoringService');
 const questionService = require('./questionService');
 const rankService = require('./rankService');
+const logger = require('../utils/logger');
 
 const { OPTION_KEYS, OPTION_LETTERS } = questionService;
 
@@ -70,6 +71,43 @@ function scopeKeyFor(cfg, ctx) {
   return 'common';
 }
 
+/** 该环节按当前配置应抽的题量（接力模式取当前队员的计划） */
+function expectedCount(cfg, scopeKey) {
+  const q = cfg.questionConfig;
+  if (q.relay && q.relayPlan && q.relayPlan.length) {
+    const plan = q.relayPlan.find((p) => p.index === Number(scopeKey)) || q.relayPlan[0];
+    return Number(plan.single || 0) + Number(plan.multiple || 0) + Number(plan.judge || 0);
+  }
+  return Number(q.single || 0) + Number(q.multiple || 0) + Number(q.judge || 0);
+}
+
+/**
+ * 判断已存在的试卷快照是否已失效。
+ *
+ * 失效场景：环节抽题数量被调整，或题库在生成快照之后才补充了大量题目
+ * （典型情况：先用示例题库试跑，随后导入正式题库）。
+ * 此时旧快照题量少于当前配置，若继续复用会导致每次进入都是同样几道题。
+ *
+ * 注意：仅在「题量不符」时重建。学生已开始作答的试卷若被重建，
+ * 会导致已答题目与卷面不一致，因此下面还会结合答题记录判断。
+ */
+async function isSnapshotStale(stage, cfg, scopeKey, existingCount) {
+  const want = expectedCount(cfg, scopeKey);
+  if (want > 0 && existingCount < want) return true;
+
+  // 配置改成固定试卷时，旧快照必然不符
+  if (cfg.paperStrategy === 'fixed' && cfg.fixedQuestionIds && cfg.fixedQuestionIds.length) {
+    const rows = await db.query(
+      'SELECT question_id FROM stage_papers WHERE stage_id = ? AND scope_key = ?',
+      [stage.id, scopeKey]
+    );
+    const have = new Set(rows.map((r) => Number(r.question_id)));
+    const allIn = cfg.fixedQuestionIds.every((id) => have.has(Number(id)));
+    if (!allIn) return true;
+  }
+  return false;
+}
+
 /** 读取或生成试卷快照 */
 async function ensurePaper(stage, cfg, ctx) {
   const scopeKey = scopeKeyFor(cfg, ctx);
@@ -78,6 +116,20 @@ async function ensurePaper(stage, cfg, ctx) {
     'SELECT question_id, sort_order, option_map FROM stage_papers WHERE stage_id = ? AND scope_key = ? ORDER BY sort_order ASC',
     [stage.id, scopeKey]
   );
+
+  if (existing.length && (await isSnapshotStale(stage, cfg, scopeKey, existing.length))) {
+    // 已有人作答则不动快照，避免卷面与答题记录错位；否则重建
+    const answered = await db.queryOne(
+      'SELECT COUNT(*) AS c FROM answers WHERE stage_id = ?',
+      [stage.id]
+    );
+    if (!answered || Number(answered.c) === 0) {
+      await db.execute('DELETE FROM stage_papers WHERE stage_id = ? AND scope_key = ?', [stage.id, scopeKey]);
+      logger.info('试卷快照已过期（原 ' + existing.length + ' 题，应为 ' + expectedCount(cfg, scopeKey) + ' 题），已重新抽题: stage=' + stage.id + ' scope=' + scopeKey);
+      existing.length = 0;
+    }
+  }
+
   if (existing.length) {
     const ids = existing.map((r) => r.question_id);
     const questions = await db.query('SELECT * FROM questions WHERE id IN (' + ids.map(() => '?').join(',') + ')', ids);
