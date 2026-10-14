@@ -192,16 +192,22 @@ function presentQuestion(item, cfg, index) {
   return out;
 }
 
-/** 接力模式：解析当前队员序号与可用时间 */
+/**
+ * 接力模式：解析当前队员序号与可用时间。
+ *
+ * 棒次按"实际进入顺序"决定，而不是队伍名单顺序 —— 比赛时队员可以自行
+ * 商定谁跑第一棒，先进入答题页的人即为当前棒次。
+ * 若配置 relayOrderMode='fixed' 则退回按名单顺序（兼容旧行为）。
+ */
 async function resolveRelayContext(stage, cfg, ctx) {
   if (!cfg.specialConfig.timeAccumulate) {
     return { active: false, playerIndex: 1, isLastPlayer: true, availableTime: cfg.timeConfig.totalTime };
   }
   const team = await db.queryOne('SELECT * FROM teams WHERE id = ?', [ctx.teamId]);
-  const members = [
-    { index: 1, studentId: team.leader_id, name: team.leader_name },
-    { index: 2, studentId: team.member1_id, name: team.member1_name },
-    { index: 3, studentId: team.member2_id, name: team.member2_name }
+  const roster = [
+    { studentId: team.leader_id, name: team.leader_name },
+    { studentId: team.member1_id, name: team.member1_name },
+    { studentId: team.member2_id, name: team.member2_name }
   ].filter((m) => m.studentId);
 
   const done = await db.query(
@@ -210,9 +216,32 @@ async function resolveRelayContext(stage, cfg, ctx) {
   );
   const doneMap = new Map(done.map((d) => [d.student_id, Number(d.total_time || 0)]));
 
-  // 当前应答题的队员 = 第一个尚未完成者
-  const nextPlayer = members.find((m) => !doneMap.has(m.studentId)) || members[members.length - 1];
-  const playerIndex = nextPlayer.index;
+  const fixedOrder = cfg.specialConfig.relayOrderMode === 'fixed';
+
+  // 已开始的队员及其顺序：以 stage_attempts.started_at 为准
+  const attempts = await db.query(
+    'SELECT student_id, started_at FROM stage_attempts WHERE stage_id = ? AND team_id = ? ORDER BY started_at ASC, id ASC',
+    [stage.id, ctx.teamId]
+  );
+
+  // 已进入过答题页的队员按进入时间排序；未进入的按名单顺序排在其后
+  const startedIds = attempts.map((a) => a.student_id).filter((id) => roster.some((m) => m.studentId === id));
+  const ordered = fixedOrder
+    ? roster.map((m) => m.studentId)
+    : [...startedIds, ...roster.map((m) => m.studentId).filter((id) => !startedIds.includes(id))];
+
+  // 去重并保持顺序
+  const seq = [...new Set(ordered)];
+  const members = seq
+    .map((id, i) => ({ index: i + 1, studentId: id, name: (roster.find((m) => m.studentId === id) || {}).name }))
+    .filter((m) => m.studentId);
+
+  // 当前棒次 = 本人（若本人尚未完成），否则第一个未完成者
+  const me = members.find((m) => m.studentId === ctx.studentId);
+  const nextPlayer = (me && !doneMap.has(me.studentId))
+    ? me
+    : (members.find((m) => !doneMap.has(m.studentId)) || members[members.length - 1]);
+  const playerIndex = nextPlayer ? nextPlayer.index : 1;
 
   const base = cfg.timeConfig.baseTimePerPlayer;
   const usedTimes = members
@@ -221,10 +250,14 @@ async function resolveRelayContext(stage, cfg, ctx) {
   const pool = scoring.relayTimePool(base, usedTimes);
   const isLastPlayer = playerIndex === members.length;
 
-  // 第三名队员可用时间 = 基础时间 + 前两名节余
+  // 最后一棒可用时间 = 基础时间 + 前几棒节余
   const availableTime = isLastPlayer ? pool.pool : base;
 
-  return { active: true, playerIndex, isLastPlayer, availableTime, members, doneMap, carried: pool.carried, nextPlayer };
+  return {
+    active: true, playerIndex, isLastPlayer, availableTime,
+    members, doneMap, carried: pool.carried, nextPlayer,
+    startedIds
+  };
 }
 
 module.exports = {

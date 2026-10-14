@@ -12,17 +12,32 @@ exports.submit = asyncHandler(async (req, res) => ok(res, await service.submitSt
 exports.result = asyncHandler(async (req, res) => ok(res, await service.getResult(req.params.id, req.user)));
 exports.wrong = asyncHandler(async (req, res) => ok(res, await service.getWrongBook(req.params.id, req.user)));
 
+/**
+ * 解析榜单类型。
+ * board=team / board=individual 由前端切换决定；
+ * 未指定时按环节赛制取默认值（团队环节默认队伍榜，个人环节默认个人榜）。
+ */
+function resolveBoard(cfg, query = {}) {
+  const want = String(query.board || '').toLowerCase();
+  if (want === 'team') return { individual: false, board: 'team' };
+  if (want === 'individual') return { individual: true, board: 'individual' };
+  const individual = cfg.mode !== 'team';
+  return { individual, board: individual ? 'individual' : 'team' };
+}
+
 /** 排行榜数据（快照） */
 exports.rank = asyncHandler(async (req, res) => {
   const stage = await stageService.getRow(req.params.id);
   const cfg = cfgMod.normalizeConfig(stage.config);
-  const individual = cfg.mode !== 'team';
+  const { individual, board } = resolveBoard(cfg, req.query);
+  const limit = Number(req.query.limit) || 200;
   const list = individual
-    ? await rankService.getIndividualRanking(req.params.id, { limit: Number(req.query.limit) || 200 })
-    : await rankService.getRanking(req.params.id, { limit: Number(req.query.limit) || 200 });
+    ? await rankService.getIndividualRanking(req.params.id, { limit })
+    : await rankService.getRanking(req.params.id, { limit });
   return ok(res, {
     stage: cfgMod.summarize(stage),
     mode: cfg.mode,
+    board,
     individual,
     list,
     updatedAt: new Date().toISOString()
@@ -40,7 +55,7 @@ exports.stream = asyncHandler(async (req, res) => {
 
   const stage = await stageService.getRow(stageId);
   const cfg = cfgMod.normalizeConfig(stage.config);
-  const individual = cfg.mode !== 'team';
+  const { individual, board } = resolveBoard(cfg, req.query);
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
@@ -61,7 +76,7 @@ exports.stream = asyncHandler(async (req, res) => {
     if (closed) return;
     try {
       const list = await fetchList();
-      const payload = JSON.stringify({ stageId: Number(stageId), individual, list, updatedAt: new Date().toISOString() });
+      const payload = JSON.stringify({ stageId: Number(stageId), board, individual, list, updatedAt: new Date().toISOString() });
       if (payload !== lastPayload) {
         lastPayload = payload;
         res.write('event: rank\ndata: ' + payload + '\n\n');

@@ -16,7 +16,7 @@
         </div>
       </div>
 
-      <el-radio-group v-if="hasIndividual" v-model="viewMode" class="view-switch" @change="load">
+      <el-radio-group v-if="hasIndividual" v-model="viewMode" class="view-switch" @change="onSwitchBoard">
         <el-radio-button label="team">队伍总榜</el-radio-button>
         <el-radio-button label="individual">个人榜</el-radio-button>
       </el-radio-group>
@@ -81,11 +81,22 @@ const updatedAt = ref(null);
 const stageName = ref('');
 const mode = ref('individual');
 const viewMode = ref('team');
+// 用户是否手动切过榜单：切过后刷新与实时推送都不再覆盖其选择
+const tabTouched = ref(false);
 
 let source = null;
 let lastSnapshot = '';
 
 const hasIndividual = computed(() => mode.value !== 'team');
+
+/** 切换榜单：记住用户选择，并重新订阅对应榜单的实时推送 */
+function onSwitchBoard() {
+  tabTouched.value = true;
+  list.value = [];
+  lastSnapshot = '';
+  load();
+  subscribe();
+}
 
 function rowClass({ row }) {
   const cls = ['rank-row-' + row.rank];
@@ -97,10 +108,13 @@ function rowClass({ row }) {
 async function load() {
   loading.value = true;
   try {
-    const data = await rankApi.rank(stageId);
+    const data = await rankApi.rank(stageId, viewMode.value);
     stageName.value = data.stage?.name || '';
     mode.value = data.mode;
-    viewMode.value = data.individual ? 'individual' : 'team';
+    // 首次加载按环节默认榜；之后尊重用户手动切换的榜单，不再被覆盖
+    if (!tabTouched.value) {
+      viewMode.value = data.individual ? 'individual' : 'team';
+    }
 
     const next = data.list || [];
     const key = JSON.stringify(next);
@@ -128,7 +142,10 @@ function subscribe() {
   if (source) source.close();
 
   const token = getToken();
-  source = new EventSource('/api/rank/stream?stageId=' + stageId + '&token=' + encodeURIComponent(token));
+  const board = viewMode.value === 'team' ? 'team' : 'individual';
+  source = new EventSource(
+    '/api/rank/stream?stageId=' + stageId + '&board=' + board + '&token=' + encodeURIComponent(token)
+  );
 
   source.onopen = () => { connected.value = true; };
 

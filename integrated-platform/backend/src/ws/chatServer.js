@@ -76,19 +76,26 @@ function init(server) {
       return;
     }
 
-    // 身份：优先使用密钥令牌，其次使用访客身份
+    // 身份：优先使用密钥令牌，其次使用访客身份。
+    // 昵称优先级：本次输入 > 登录身份名；否则侧栏只会显示"用户/管理员"。
     let identity = null;
+    const typedName = String(query.name || '').trim().slice(0, 30);
     if (query.token) {
       try {
         const payload = jwtUtil.verify(query.token);
-        identity = { key: 'key-' + payload.keyId, name: payload.role === 'admin' ? '管理员' : '用户', role: payload.role };
+        const fallbackName = payload.role === 'admin' ? '管理员' : '用户';
+        identity = {
+          key: 'key-' + payload.keyId,
+          name: typedName || fallbackName,
+          role: payload.role
+        };
       } catch (_) {
         /* 令牌无效则回落为访客 */
       }
     }
     if (!identity) {
       const memberKey = query.memberKey || ('guest-' + Math.random().toString(36).slice(2, 10));
-      identity = { key: memberKey, name: query.name || '访客', role: 'guest' };
+      identity = { key: memberKey, name: typedName || '访客', role: 'guest' };
     }
 
     ws.roomId = roomId;

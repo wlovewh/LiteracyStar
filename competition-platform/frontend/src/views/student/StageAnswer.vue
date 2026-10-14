@@ -202,11 +202,18 @@ function markUpdated(rows) {
   }, 1200);
 }
 
+/** 当前环节应看的榜单：团队环节看队伍总榜，个人环节看个人榜 */
+function currentBoard() {
+  return isTeamMode.value ? 'team' : 'individual';
+}
+
 /** 建立 SSE 连接，答题期间实时刷新排行榜 */
 function connectRankStream() {
   const token = getToken();
   if (!token) return;
-  const url = '/api/rank/stream?stageId=' + encodeURIComponent(stageId) + '&token=' + encodeURIComponent(token);
+  const url = '/api/rank/stream?stageId=' + encodeURIComponent(stageId)
+    + '&board=' + currentBoard()
+    + '&token=' + encodeURIComponent(token);
   rankSource = new EventSource(url);
 
   rankSource.addEventListener('open', () => {
@@ -291,7 +298,7 @@ async function submitCurrent() {
     const res = await examApi.answer(stageId, {
       questionId: q.questionId,
       answer: ans,
-      timeSpent: exam.value?.perQuestionTime || 5
+      timeSpent: elapsedForCurrent()
     });
     feedback.value = res;
     // 提交后立即拉取一次最新排名，无需等待下一个推送周期
@@ -306,7 +313,7 @@ async function submitCurrent() {
 /** 主动拉取一次排行榜快照（提交答案后立即刷新） */
 async function refreshRankOnce() {
   try {
-    const rows = await rankApi.snapshot(stageId);
+    const rows = await rankApi.snapshot(stageId, currentBoard());
     const list = Array.isArray(rows) ? rows : (rows.list || rows.ranking || []);
     markUpdated(list);
     rankList.value = list;
@@ -327,6 +334,7 @@ function go(delta) {
   }
   feedback.value = null;
   currentIndex.value = next;
+  markQuestionStart();
 }
 
 /**
@@ -340,6 +348,7 @@ async function nextQuestion() {
   if (currentIndex.value < questions.value.length - 1) {
     feedback.value = null;
     currentIndex.value += 1;
+    markQuestionStart();
   }
 }
 
@@ -369,6 +378,7 @@ async function jump(i) {
   await commitCurrent();
   feedback.value = null;
   currentIndex.value = i;
+  markQuestionStart();
 }
 
 async function confirmSubmit() {
@@ -413,9 +423,27 @@ async function doSubmit(auto = false) {
 
 const totalTimeLimit = ref(0);
 
+/**
+ * 每题实际用时（秒）。
+ * 以墙上时钟为准，而不是每秒自减的计数器 —— 计数器在后台标签页会被
+ * 浏览器降频，导致记录的时间远小于真实用时。
+ */
+const questionStartedAt = ref(Date.now());
+
+/** 开始/重置当前题的计时起点 */
+function markQuestionStart() {
+  questionStartedAt.value = Date.now();
+}
+
+/** 当前题已用秒数（至少 1 秒，避免出现 0） */
+function elapsedForCurrent() {
+  return Math.max(1, Math.round((Date.now() - questionStartedAt.value) / 1000));
+}
+
 function startTimer(seconds) {
   totalTimeLimit.value = seconds;
   remaining.value = seconds;
+  markQuestionStart();
   if (timer) clearInterval(timer);
   timer = setInterval(() => {
     remaining.value -= 1;
@@ -444,6 +472,7 @@ async function load() {
     answers.value = map;
 
     startTimer(data.availableTime || 600);
+    markQuestionStart();
   } catch (e) {
     setTimeout(() => router.push('/stage/' + stageId + '/ready'), 900);
   } finally {
@@ -458,8 +487,9 @@ function beforeUnload(e) {
   e.returnValue = '';
 }
 
-onMounted(() => {
-  load();
+onMounted(async () => {
+  await load();
+  // 必须等 load() 拿到 stage.mode 后再订阅，否则团队环节会订到个人榜
   connectRankStream();
   window.addEventListener('beforeunload', beforeUnload);
 });

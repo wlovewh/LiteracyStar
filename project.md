@@ -1696,4 +1696,176 @@ LiteracyStar/
 - **未登录鉴权（②）**：未登录访问 `/platform-api/auth/keys`、`POST /platform-api/questions/manage` 均返回 401；资源与分类接口仅返回启用项。
 - **隐藏入口（①）**：登录页 HTML 中已不含「需要备赛工具」与「进入综合平台」文案。
 
+---
+
+# 第十六章 第五轮至第八轮迭代修复记录
+
+> 本章记录 2026-10-14 期间，针对实际使用中暴露的问题所做的四轮修复。
+> 所有修复均已部署至生产环境（47.88.49.160）并通过公网验证。
+
+## 16.1 第五轮：新建环节报「服务器内部错误」
+
+| 项目 | 内容 |
+| --- | --- |
+| 现象 | 新建赛事正常，但在赛事下新建环节固定报 500 |
+| 根因 | 路由声明为 `/:id/stages`，Express 填充的是 `req.params.id`；而 `stageController.create` 读取 `req.params.eventId`，取到 `undefined`，最终在 `stageService.js:31` 的 `SELECT id FROM events WHERE id = ?` 处抛出「Bind parameters must not contain undefined」 |
+| 修复 | 新增 `eventIdOf(req)` 辅助函数，返回 `req.params.eventId ?? req.params.id`，`listByEvent` / `create` / `reorder` 三处统一改用 |
+| 验证 | `stage-test.js` 10 / 10 通过 |
+
+`reorder`（环节排序）存在完全相同的缺陷，一并修复。
+
+## 16.2 第六轮：多赛事下无法选择赛事
+
+| 项目 | 内容 |
+| --- | --- |
+| 现象 | 学生登录后直接进入最后一个新建的赛事，无选择入口 |
+| 根因 | 赛事查询硬编码 `ORDER BY id DESC LIMIT 1`，且无赛事列表接口 |
+| 修复 | ① `eventService.listForStudent()` 新增可选赛事列表；② `currentForStudent(eventId)` 返回 `{ event, stages, events }`，请求的赛事不存在或已停用时返回 `event: null`，不再静默回落；③ 新增 `GET /api/events/available`（须声明在 `/:id` 之前）；④ 首页在赛事数 > 1 时显示 `el-select`，选择结果存入 `localStorage['selectedEventId']` |
+| 验证 | `event-select-test.js` 11 / 11、`event-switch-test.js` 11 / 11 通过 |
+
+## 16.3 第七轮：随机组卷失效与聊天室三项缺陷
+
+### 16.3.1 随机组卷失效（重点）
+
+| 项目 | 内容 |
+| --- | --- |
+| 现象 | 团队对抗等环节每次进入题目完全相同，且只有 3 道题，疑似写死 |
+| 根因 | **并非写死**。`ensurePaper` 首次进入时会把抽题结果持久化为试卷快照（`stage_papers`），此后固定读取该快照——这是为保证同场选手做同一套卷子。但环节 2/3/4 的快照生成于 10-13 日，当时题库仅有 8 道示例题，快照被永久固定为 3 / 8 / 3 道。后续导入 1800 道题不会触发重新抽题 |
+| 修复 | `ensurePaper` 增加快照有效性校验：新增 `expectedCount(cfg, scopeKey)` 计算应有题量，`isSnapshotStale()` 判定快照是否过期；过期则删除并重新随机抽题。**保护条件**：若该环节 `answers` 表已有记录则不动快照，避免卷面与答题记录错位 |
+| 数据清理 | 删除 8 道示例题（题库 → 1800 道）、删除环节 2/3/4 的过期快照、删除环节 2 的试跑成绩（2 队：17 队 3 分、23 队 8 分）、清理 Redis `stage:*` 键。清理前完整备份至 `/root/backup_before_cleanup_20261014_172821.sql`（841K） |
+| 验证 | 环节 1 → 10 题、环节 2 → 10 题（题型 6/2/2）、环节 3 → 20 题、环节 4 → 10 题，均与配置一致 |
+
+### 16.3.2 聊天室切换页面即退出
+
+会话状态仅存于组件内，路由切换即销毁。改为写入 `localStorage`（`chat_session`，默认 24 小时），返回页面自动恢复房间、消息与在线列表；只有主动点「离开聊天室」才清除。
+
+### 16.3.3 昵称不生效
+
+`enterRoom` 先用输入的昵称赋值 `myName`，紧接着被 `resolveIdentity` 返回的 `auth.roleLabel`（「用户」/「管理员」）覆盖。优先级修正为：**本次输入 > 已保存昵称 > 登录身份名 > 访客**。
+
+### 16.3.4 引用消息看不到被引用内容
+
+后端仅返回 `quoted_message_id`，前端硬编码显示「引用了一条消息」。新增 `attachQuoted()`，在消息列表与新消息广播中附带被引用消息的发送者与内容；原消息已删除时返回 `null`，前端显示「原消息已被删除」。
+
+## 16.4 第八轮：八项问题修复
+
+### 16.4.1 超时未强制收卷（①）
+
+| 项目 | 内容 |
+| --- | --- |
+| 现象 | 答题时间截止后仍可继续作答，只是不加分；正常应强制收卷并显示分数界面 |
+| 根因 | 倒计时**仅存在于前端**，服务端无任何时限校验。前端刷新页面即重置倒计时，且 `submitAnswer` 无时间判断 |
+| 修复 | ① 新增 `stage_attempts` 表记录每位选手/每支队伍的首次进入时间（`ON DUPLICATE KEY UPDATE` 不覆盖起点）；② `remainingSeconds()` 以 `started_at` 计算服务端权威剩余时间，`startExam` 返回扣除已用时长后的 `availableTime`；③ `submitAnswer` 超时抛出 403「答题时间已结束，无法继续作答」；④ 交卷时写入 `submitted_at` |
+
+新增表结构：
+
+```sql
+CREATE TABLE stage_attempts (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  stage_id     INT UNSIGNED NOT NULL,
+  team_id      INT UNSIGNED NOT NULL,
+  student_id   VARCHAR(50) NOT NULL,
+  scope_key    VARCHAR(50) NOT NULL DEFAULT 'common',
+  started_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '首次进入时间',
+  submitted_at DATETIME DEFAULT NULL COMMENT '交卷时间',
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_attempt (stage_id, team_id, student_id),
+  KEY idx_attempt_stage (stage_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='答题开始时间表';
+```
+
+### 16.4.2 排行榜三项缺陷（②）
+
+| 缺陷 | 根因 | 修复 |
+| --- | --- | --- |
+| 点「队伍总榜」被强制跳回「个人榜」 | 榜单类型由 `cfg.mode` 单向推导，且 `load()` 每次都用 `data.individual` 覆盖 `viewMode`；SSE 推送同样覆盖 | 后端新增 `resolveBoard(cfg, query)`，支持 `?board=team\|individual` 显式指定；前端新增 `tabTouched` 标记，用户手动切换后刷新与推送均不再覆盖 |
+| 答题过程中队伍显示为每人一行 | 团队环节 `refreshLiveRank` 用 `student_id <=> NULL` 过滤，而每位队员的答题记录都带自己的学号，实际匹配 0 行 → 队伍分恒为 0 | 团队得分改为**全队成员得分之和**（去掉学号过滤）；个人环节同时维护本人榜与队伍合计榜 |
+| 团队分数口径不一致 | `getRanking` 的实时回落分支同样按 `team_id` 分组求和，但 `updateRank` 写入值有误 | 统一为「队伍分 = 全队 SUM(score_delta)」，与团队环节口径一致 |
+
+### 16.4.3 答题用时错误（③，严重）
+
+| 项目 | 内容 |
+| --- | --- |
+| 现象 | 实际用了三四分钟，记录却恒为 45 秒 / 30 秒等固定值，所有环节均如此 |
+| 根因 | `StageAnswer.vue:294` 提交时写死 `timeSpent: exam.value?.perQuestionTime \|\| 5`，从未计算真实用时 |
+| 修复 | 新增 `questionStartedAt` 与 `markQuestionStart()`；`elapsedForCurrent()` 以**墙上时钟**（`Date.now()`）计算，而非每秒自减的计数器——计数器在后台标签页会被浏览器降频，导致记录远小于真实用时。在 `go()` / `nextQuestion()` / `jump()` / 试卷加载处共 4 处重置计时起点 |
+
+### 16.4.4 错题本缺陷（④）
+
+| 缺陷 | 根因 | 修复 |
+| --- | --- | --- |
+| 明明有错却显示「恭喜，本环节没有错题」 | 错题查询固定 `a.student_id = ?`。团队环节中每位队员的答题记录带各自学号，队长本人未作答时查询返回空 | 团队环节改为按 `team_id` 汇总全队错题 |
+| 跳过的题目不显示 | 仅查询 `answers` 表中已有记录，未作答题目不在其中 | 以试卷快照为基准，反查出卷面上存在但无答题记录的题目，标记 `skipped: true` 一并返回；响应新增 `wrongCount` 字段 |
+
+### 16.4.5 赛事序号问题（⑤）
+
+| 项目 | 内容 |
+| --- | --- |
+| 现象 | 每次提示「该赛事已不可用，已切换到其他赛事」；删除赛事后序号不释放 |
+| 根因 | ① 赛事列表按 `id DESC` 排序，默认进入最新建的赛事，而非序号最小的；② 记忆中的赛事已被删除时仍弹警告；③ 自增主键删除后不回收（MySQL 正常行为，防止与已有引用冲突） |
+| 修复 | ① 赛事列表改为 `ORDER BY id ASC`，默认进入序号最小的赛事；② 仅当用户**主动选择**的赛事不可用时才提示，记忆失效则静默回退到默认赛事；③ 序号不回收属预期行为，如需连续序号需重排所有关联外键，风险较高，当前保持现状 |
+
+### 16.4.6 接力赛棒次（⑥）
+
+| 项目 | 内容 |
+| --- | --- |
+| 现象 | 棒次固定为队长 → 第二队员 → 第三队员，无法自行商定 |
+| 根因 | `resolveRelayContext` 按队伍名单顺序排列 `[leader, member1, member2]`，取第一个未完成者 |
+| 修复 | 棒次改由**实际进入顺序**决定：以 `stage_attempts.started_at` 排序，先进入答题页者即为当前棒次。已进入者按进入时间排序，未进入者按名单顺序排在其后。当前棒次取「本人（若本人尚未完成）」，否则第一个未完成者。保留 `specialConfig.relayOrderMode='fixed'` 可退回名单顺序 |
+
+### 16.4.7 键盘快捷操作与即时检索（⑦）
+
+| 项目 | 现状 |
+| --- | --- |
+| 登录回车 | 竞赛平台登录页 4 个输入框（学号、密码、管理员账号、管理员密码）均已有 `@keyup.enter` |
+| 聊天发送 | 聊天室输入框已支持 Enter 发送、Shift+Enter 换行 |
+| 题库检索 | **本轮新增**：关键词输入后 350ms 防抖自动查询，无需手动点「查询」；回车与点击「查询」仍可立即触发（会取消待执行的防抖）。模块 / 题型 / 难度 / 来源筛选变化立即查询。占位文案改为「输入关键词，自动检索」 |
+
+### 16.4.8 聊天室图片发送与成员昵称（⑧）
+
+**图片发送**（评估结论：可行，架构改动小，数据量可控）
+
+| 项目 | 说明 |
+| --- | --- |
+| 上传接口 | `POST /platform-api/chat/rooms/:id/image`，multipart 字段 `image`，存入 `backend/uploads/chat/`，返回 `{ url, filename }` |
+| 限制 | 单张上限 5MB；仅 PNG / JPG / GIF / WEBP（**不含 SVG**，避免脚本注入）；文件名由时间戳 + 随机字节生成，不采用原始文件名 |
+| 消息结构 | 图片以 `messageType='image'` 发送，`content` 与 `extra.url` 存相对 URL |
+| 数据量 | **图片内容不落库、不进 WebSocket 帧**，数据库与消息表仅增加一个短 URL 字符串，因此数据量影响极小 |
+| 前端 | 输入区新增图片按钮，选用 `el-image` 渲染并支持点击放大预览 |
+
+**成员列表显示昵称**：`chatServer.js:84` 对登录用户硬编码 `name: payload.role === 'admin' ? '管理员' : '用户'`，忽略用户填写的称呼。修复为 `typedName || fallbackName`，且前端在已登录时也一并传递 `name` 参数。
+
+## 16.5 第八轮验证结果
+
+| 测试项 | 结果 |
+| --- | --- |
+| 模拟平台 `round8-test.js`（新增） | 21 / 21 通过 |
+| 模拟平台 `test-logic.js` | 28 / 28 通过 |
+| 模拟平台 `audit-spec.js` | 68 / 68 通过 |
+| 模拟平台 `smoke-test.js` | 43 / 43 通过 |
+| 模拟平台 `stage-test.js` | 10 / 10 通过 |
+| 模拟平台 `event-select-test.js` | 11 / 11 通过 |
+| 模拟平台 `event-switch-test.js` | 11 / 11 通过 |
+| 综合平台 `round8-test.js`（新增） | 16 / 16 通过 |
+| 综合平台 `smoke-test.js` | 31 / 31 通过 |
+| 综合平台 `ws-test.js` | 9 / 9 通过 |
+| 综合平台 `admin-test.js` | 15 / 15 通过 |
+| 综合平台 `quote-test.js` | 10 / 10 通过 |
+| 公网验证（赛事排序、榜单切换、图片上传） | 10 / 10 通过 |
+
+关键功能实测（服务器生产环境）：
+
+- **超时强制收卷（①）**：`startExam` 返回扣除已用时长后的 `availableTime`（配置 300 秒即返回 300），`expired` 标记正确；超时后 `submitAnswer` 返回 403。
+- **榜单切换（②）**：团队环节 `board=team` / `board=individual` 均返回对应榜单，不传参时团队环节默认队伍榜、个人环节默认个人榜。
+- **错题本（④）**：交卷后错题本返回 4 条记录，其中 3 条为未作答题目且 `skipped=true`、`userAnswer` 为空，`wrongCount` 与实际条数一致。
+- **图片上传（⑧）**：上传返回 `/platform-api/uploads/chat/<file>`，公网访问 200 且 `Content-Type: image/png`；非图片文件被拒绝；图片消息 `messageType='image'` 正确落库并可引用。
+
+## 16.6 已知事项
+
+- **赛事序号不回收**：删除赛事后自增 ID 继续递增（如现有 id=1、id=3，id=2 已删除）。这是 MySQL 的预期行为，如需连续序号须重排 `stages` / `stage_papers` / `answers` / `stage_scores` / `stage_attempts` 等所有关联外键，风险较高，当前保持现状。
+- **本地与生产数据差异**：本地库仅有赛事 id=1；生产库另有真实学生账号（如 `25101802030` 蒋先涛，密码即学号），本地测试账号为 `2026001`–`2026009`。
+- **Redis 降级**：本地开发环境 Redis 不可用时自动降级为内存实现，生产环境使用真实 Redis。
+
 **文档结束。**

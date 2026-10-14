@@ -20,7 +20,7 @@ async function list({ keyword, status } = {}) {
     '(SELECT COUNT(*) FROM stages s WHERE s.event_id = e.id AND s.status = 1) AS active_stage_count ' +
     'FROM events e ' +
     (where.length ? 'WHERE ' + where.join(' AND ') : '') +
-    ' ORDER BY e.id DESC';
+    ' ORDER BY e.id ASC';
   return db.query(sql, params);
 }
 
@@ -79,10 +79,11 @@ async function remove(id) {
  * 只返回已启用的赛事，并附带已开启环节数量，便于前端展示。
  */
 async function listForStudent() {
+  // 按 id 升序：默认进入序号最小的赛事，避免多赛事时总是跳到最新建的那个
   const rows = await db.query(
     'SELECT e.id, e.name, e.description, e.created_at, ' +
     '(SELECT COUNT(*) FROM stages s WHERE s.event_id = e.id AND s.status = 1) AS active_stage_count ' +
-    'FROM events e WHERE e.status = 1 ORDER BY e.id DESC'
+    'FROM events e WHERE e.status = 1 ORDER BY e.id ASC'
   );
   return rows;
 }

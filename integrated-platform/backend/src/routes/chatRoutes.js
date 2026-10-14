@@ -2,6 +2,7 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/chatController');
 const { requireAdmin, optionalAuth } = require('../middlewares/auth');
+const upload = require('../middlewares/upload');
 
 // 快速短语（访客可读，管理员可写）
 router.get('/phrases', optionalAuth, ctrl.listPhrases);
@@ -18,6 +19,8 @@ router.put('/rooms/:id', requireAdmin, ctrl.updateRoom);
 router.post('/rooms/:id/invite', ctrl.refreshInvite);
 router.get('/rooms/:id/messages', ctrl.messages);
 router.post('/rooms/:id/messages', ctrl.send);
+// 图片上传：先传文件拿到 URL，再作为 messageType='image' 的消息发送
+router.post('/rooms/:id/image', upload.chatImage, ctrl.uploadImage);
 router.get('/rooms/:id/search', ctrl.searchMessages);
 router.post('/rooms/:id/answer', ctrl.submitAnswer);
 router.get('/rooms/:id/online', ctrl.online);

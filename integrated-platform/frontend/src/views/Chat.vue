@@ -151,6 +151,26 @@
               </div>
             </template>
 
+            <!-- 图片消息 -->
+            <template v-else-if="m.messageType === 'image'">
+              <div class="msg-bubble msg-bubble-image">
+                <div v-if="m.quotedMessageId" class="msg-quote">
+                  <template v-if="m.quoted">
+                    <span class="quote-author">{{ m.quoted.senderName }}：</span>
+                    <span class="quote-text">{{ quotePreview(m.quoted) }}</span>
+                  </template>
+                  <span v-else class="quote-text">原消息已被删除</span>
+                </div>
+                <el-image
+                  :src="imageUrlOf(m)"
+                  :preview-src-list="[imageUrlOf(m)]"
+                  fit="cover"
+                  class="msg-image"
+                  preview-teleported
+                />
+              </div>
+            </template>
+
             <!-- 普通文本 -->
             <template v-else>
               <div class="msg-bubble">
@@ -199,8 +219,21 @@
               placeholder="输入消息，Enter 发送，Shift+Enter 换行"
               @keydown.enter.exact.prevent="sendText"
             />
+            <el-button
+              :icon="Picture"
+              :loading="uploading"
+              title="发送图片"
+              @click="pickImage"
+            />
             <el-button type="primary" :disabled="!draft.trim()" @click="sendText">发送</el-button>
           </div>
+          <input
+            ref="fileInput"
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            style="display: none"
+            @change="onImagePicked"
+          />
         </div>
       </section>
     </div>
@@ -211,6 +244,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage } from 'element-plus';
+import { Picture } from '@element-plus/icons-vue';
 import { chatApi } from '@/api';
 import { getGuest, setGuest, getToken } from '@/api/http';
 import { useAuthStore } from '@/stores/auth';
@@ -449,8 +483,10 @@ function wsUrl() {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const params = new URLSearchParams({ roomId: String(room.value.id) });
   const token = getToken();
+  // 始终带上昵称：登录用户也需要显示自己填的称呼，而不是"用户/管理员"
   if (token) params.set('token', token);
-  else { params.set('memberKey', myKey.value); params.set('name', myName.value); }
+  else params.set('memberKey', myKey.value);
+  if (myName.value) params.set('name', myName.value);
   return proto + '//' + window.location.host + '/platform-ws?' + params.toString();
 }
 
@@ -527,6 +563,49 @@ function sendText() {
   sendVia({ type: 'message', content, quotedMessageId: quoted.value ? quoted.value.id : null });
   draft.value = '';
   quoted.value = null;
+}
+
+// ---------------- 图片发送 ----------------
+const fileInput = ref(null);
+const uploading = ref(false);
+
+function pickImage() {
+  if (fileInput.value) {
+    fileInput.value.value = '';
+    fileInput.value.click();
+  }
+}
+
+/** 图片消息的完整 URL（后端存的是 /platform-api/... 相对路径） */
+function imageUrlOf(m) {
+  const url = m.extra?.url || m.content || '';
+  if (/^https?:\/\//i.test(url)) return url;
+  return url.startsWith('/') ? url : '/' + url;
+}
+
+async function onImagePicked(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  if (file.size > 5 * 1024 * 1024) {
+    ElMessage.warning('图片不能超过 5MB');
+    return;
+  }
+  uploading.value = true;
+  try {
+    const r = await chatApi.uploadImage(room.value.id, file);
+    sendVia({
+      type: 'message',
+      messageType: 'image',
+      content: r.url,
+      extra: { url: r.url, name: file.name, size: file.size },
+      quotedMessageId: quoted.value ? quoted.value.id : null
+    });
+    quoted.value = null;
+  } catch (err) {
+    /* 错误已提示 */
+  } finally {
+    uploading.value = false;
+  }
 }
 
 function sendPhrase(content) {
@@ -650,6 +729,20 @@ onBeforeUnmount(() => {
   font-size: var(--f-lg); font-weight: 600; color: var(--c-primary);
   letter-spacing: 3px; margin: 6px 0;
 }
+.msg-bubble-image {
+  padding: 8px;
+  max-width: 260px;
+}
+
+.msg-image {
+  display: block;
+  width: 100%;
+  max-width: 240px;
+  max-height: 240px;
+  border-radius: var(--r-tag);
+  cursor: zoom-in;
+}
+
 .msg-quote {
   font-size: var(--f-xs);
   color: var(--c-text-sub);

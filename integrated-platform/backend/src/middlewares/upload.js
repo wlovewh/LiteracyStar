@@ -18,7 +18,18 @@ const uploadSheet = multer({
   limits: { fileSize: 5 * 1024 * 1024 }
 });
 
+// 聊天图片：字段名 image，单张上限 5MB，仅常见位图格式（不含 svg，避免脚本注入）
+const chatImage = multer({
+  storage: memory,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter(req, file, cb) {
+    const ok = /^image[\/](png|jpe?g|gif|webp)$/i.test(file.mimetype);
+    cb(ok ? null : new Error('仅支持 PNG / JPG / GIF / WEBP 图片'), ok);
+  }
+});
+
 module.exports = {
   singleImage: uploadImage.single('icon'),
-  singleSheet: uploadSheet.single('file')
+  singleSheet: uploadSheet.single('file'),
+  chatImage: chatImage.single('image')
 };

@@ -138,7 +138,7 @@ function normalizeMessage(row) {
 /** 写入一条消息并广播 */
 async function saveMessage(roomId, payload = {}) {
   const room = await getRoomById(roomId);
-  const type = ['text', 'question', 'answer', 'system'].includes(payload.messageType)
+  const type = ['text', 'question', 'answer', 'system', 'image'].includes(payload.messageType)
     ? payload.messageType : 'text';
 
   const res = await db.execute(

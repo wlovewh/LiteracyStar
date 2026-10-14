@@ -70,6 +70,14 @@ export const chatApi = {
   updateRoom: (id, data) => http.put('/chat/rooms/' + id, data),
   refreshInvite: (id) => http.post('/chat/rooms/' + id + '/invite'),
   messages: (id, limit) => http.get('/chat/rooms/' + id + '/messages', { params: { limit } }),
+  // 聊天图片：multipart 上传，返回 { url, filename }
+  uploadImage: (id, file) => {
+    const fd = new FormData();
+    fd.append('image', file);
+    return http.post('/chat/rooms/' + id + '/image', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+  },
   send: (id, data) => http.post('/chat/rooms/' + id + '/messages', data),
   submitAnswer: (id, data) => http.post('/chat/rooms/' + id + '/answer', data),
   searchMessages: (id, keyword) => http.get('/chat/rooms/' + id + '/search', { params: { keyword } }),

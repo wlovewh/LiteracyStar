@@ -58,6 +58,7 @@ async function getRanking(stageId, { scopeKey = 'common', limit = 200 } = {}) {
   // 保证答题过程中团队榜同样可见（与个人榜口径一致）。
   const liveMap = new Map();
   if (!scores.length) {
+    // 队伍实时分 = 全队成员答题得分之和
     const live = await db.query(
       'SELECT team_id, COALESCE(SUM(score_delta), 0) AS total_score, COALESCE(SUM(time_spent), 0) AS total_time ' +
       'FROM answers WHERE stage_id = ? GROUP BY team_id',

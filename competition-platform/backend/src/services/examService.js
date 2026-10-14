@@ -66,6 +66,14 @@ async function startExam(stageId, user) {
   };
   const { scopeKey, items } = await paper.ensurePaper(stage, cfg, ctx);
 
+  // 记录首次进入时间，用于服务端强制时限（重复进入不覆盖）
+  await db.execute(
+    'INSERT INTO stage_attempts (stage_id, team_id, student_id, scope_key) VALUES (?,?,?,?) ' +
+    'ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP',
+    [stageId, user.teamId, user.studentId, scopeKey]
+  );
+  const timeState = await remainingSeconds(stageId, user, relay.active ? relay.availableTime : cfg.timeConfig.totalTime);
+
   // 已有作答记录（断线重连）
   const existing = await db.query(
     'SELECT question_id, user_answer FROM answers WHERE stage_id = ? AND team_id = ? AND student_id = ?',
@@ -85,13 +93,35 @@ async function startExam(stageId, user) {
     questions,
     relay,
     serverTime: new Date().toISOString(),
-    // 服务端权威时限（秒）
-    availableTime: relay.active ? relay.availableTime : cfg.timeConfig.totalTime,
+    // 服务端权威时限（秒）：扣除已经用掉的时间，刷新页面不会重置倒计时
+    availableTime: relay.active ? relay.availableTime : timeState.remaining,
+    expired: timeState.expired,
     perQuestionTime: cfg.timeConfig.perQuestionTime,
     allowSkip: cfg.specialConfig.allowSkip,
     allowReturn: cfg.specialConfig.allowReturn,
     buzzerWaitTime: cfg.timeConfig.buzzerWaitTime
   };
+}
+
+/**
+ * 计算本次答题的剩余秒数（服务端权威时限）。
+ * 以 stage_attempts.started_at 为起点，避免前端刷新页面重置倒计时。
+ */
+async function remainingSeconds(stageId, user, limitSeconds) {
+  const row = await db.queryOne(
+    'SELECT started_at, submitted_at FROM stage_attempts WHERE stage_id = ? AND team_id = ? AND student_id = ?',
+    [stageId, user.teamId, user.studentId]
+  );
+  const limit = Number(limitSeconds);
+  if (!row) return { remaining: limit, expired: false, startedAt: null };
+  // mysql2 可能返回 Date 对象或字符串，统一成毫秒时间戳
+  const startedAt = row.started_at instanceof Date
+    ? row.started_at.getTime()
+    : new Date(String(row.started_at).replace(' ', 'T')).getTime();
+  if (!Number.isFinite(startedAt)) return { remaining: limit, expired: false, startedAt: row.started_at };
+  const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+  const remaining = Math.max(0, limit - elapsed);
+  return { remaining, expired: remaining <= 0, startedAt: row.started_at, submittedAt: row.submitted_at };
 }
 
 /**
@@ -102,6 +132,13 @@ async function submitAnswer(stageId, user, { questionId, answer, timeSpent }) {
   const stage = await stageService.getRow(stageId);
   const cfg = cfgMod.normalizeConfig(stage.config);
   await assertVisible(stage, cfg, user);
+
+  // 服务端强制时限：超时后拒绝继续作答（前端倒计时可被刷新绕过）
+  const relayCfg = cfg.timeConfig.totalTime;
+  const timeState = await remainingSeconds(stageId, user, relayCfg);
+  if (timeState.expired) {
+    throw new AppError('答题时间已结束，无法继续作答', 403, 403);
+  }
 
   const relay = await paper.resolveRelayContext(stage, cfg, { teamId: user.teamId, studentId: user.studentId });
   const ctx = { studentId: user.studentId, teamId: user.teamId, playerIndex: relay.active ? relay.playerIndex : 1 };
@@ -176,33 +213,40 @@ async function submitAnswer(stageId, user, { questionId, answer, timeSpent }) {
  */
 async function refreshLiveRank(stageId, user, cfg) {
   const isTeam = cfg.mode === 'team';
-  const scoreStudentId = isTeam ? null : user.studentId;
-
-  const agg = await db.queryOne(
-    'SELECT COALESCE(SUM(score_delta), 0) AS total_score, COALESCE(SUM(time_spent), 0) AS total_time, ' +
-    '       COUNT(*) AS answered ' +
-    'FROM answers WHERE stage_id = ? AND team_id = ? AND student_id <=> ?',
-    [stageId, user.teamId, scoreStudentId]
-  );
-  if (!agg) return;
-
-  const totalScore = Number(agg.total_score);
-  const totalTime = Number(agg.total_time);
 
   if (isTeam) {
-    await rankService.updateRank(stageId, user.teamId, totalScore, totalTime, 'common');
-  } else {
-    await rankService.updateRank(stageId, user.teamId, totalScore, totalTime, user.studentId);
-    // 团队榜取该队所有队员中的最好成绩
-    const best = await db.queryOne(
+    // 团队环节：队伍得分 = 全队成员得分之和。
+    // 注意不能按 student_id <=> NULL 过滤——每位队员的答题记录都带自己的学号，
+    // 那样只会匹配到 0 行，导致队伍分数恒为 0、界面上退化成按人显示。
+    const agg = await db.queryOne(
       'SELECT COALESCE(SUM(score_delta), 0) AS total_score, COALESCE(SUM(time_spent), 0) AS total_time ' +
-      'FROM answers WHERE stage_id = ? AND team_id = ? GROUP BY student_id ' +
-      'ORDER BY total_score DESC, total_time ASC LIMIT 1',
+      'FROM answers WHERE stage_id = ? AND team_id = ?',
       [stageId, user.teamId]
     );
-    if (best) {
-      await rankService.updateRank(stageId, user.teamId, Number(best.total_score), Number(best.total_time), 'common');
+    if (agg) {
+      await rankService.updateRank(stageId, user.teamId, Number(agg.total_score), Number(agg.total_time), 'common');
     }
+    return;
+  }
+
+  // 个人环节：本人榜按学号建榜
+  const mine = await db.queryOne(
+    'SELECT COALESCE(SUM(score_delta), 0) AS total_score, COALESCE(SUM(time_spent), 0) AS total_time ' +
+    'FROM answers WHERE stage_id = ? AND team_id = ? AND student_id = ?',
+    [stageId, user.teamId, user.studentId]
+  );
+  if (mine) {
+    await rankService.updateRank(stageId, user.teamId, Number(mine.total_score), Number(mine.total_time), user.studentId);
+  }
+
+  // 团队榜：全队成员得分之和（与团队环节口径一致）
+  const teamAgg = await db.queryOne(
+    'SELECT COALESCE(SUM(score_delta), 0) AS total_score, COALESCE(SUM(time_spent), 0) AS total_time ' +
+    'FROM answers WHERE stage_id = ? AND team_id = ?',
+    [stageId, user.teamId]
+  );
+  if (teamAgg) {
+    await rankService.updateRank(stageId, user.teamId, Number(teamAgg.total_score), Number(teamAgg.total_time), 'common');
   }
 }
 
@@ -253,6 +297,12 @@ async function submitStage(stageId, user, { totalTime } = {}) {
   }
 
   const finalScore = totalScore + extraDeduction;
+
+  // 标记已交卷：超时自动收卷与手动交卷都会走到这里
+  await db.execute(
+    'UPDATE stage_attempts SET submitted_at = CURRENT_TIMESTAMP WHERE stage_id = ? AND team_id = ? AND student_id = ?',
+    [stageId, user.teamId, user.studentId]
+  );
 
   await db.execute(
     'INSERT INTO stage_scores (stage_id, team_id, student_id, total_score, total_time) VALUES (?,?,?,?,?) ' +
@@ -386,25 +436,65 @@ async function getWrongBook(stageId, user) {
     };
   }
 
+  // 团队环节：错题按全队汇总（每位队员的答题记录都带自己的学号，
+  // 只按队长学号过滤会漏掉队友的错题，甚至返回空列表）。
+  const isTeam = cfg.mode === 'team';
+  const answerWhere = isTeam
+    ? 'a.stage_id = ? AND a.team_id = ?'
+    : 'a.stage_id = ? AND a.team_id = ? AND a.student_id = ?';
+  const answerParams = isTeam ? [stageId, user.teamId] : [stageId, user.teamId, user.studentId];
+
+  // 该选手/该队在本环节的试卷
+  const scopeKey = paper.scopeKeyFor(cfg, { studentId: user.studentId, teamId: user.teamId, playerIndex: 1 });
+  const paperWhere = isTeam
+    ? 'stage_id = ? AND scope_key IN (SELECT DISTINCT scope_key FROM stage_papers WHERE stage_id = ?)'
+    : 'stage_id = ? AND scope_key = ?';
+  const paperParams = isTeam ? [stageId, stageId] : [stageId, scopeKey];
+
+  const papers = await db.query(
+    'SELECT question_id, option_map FROM stage_papers WHERE ' + paperWhere,
+    paperParams
+  );
+  const mapByQuestion = new Map(papers.map((p) => [p.question_id, p.option_map || {}]));
+
+  // 已作答且答错的题
   const rows = await db.query(
     'SELECT a.question_id, a.user_answer, a.is_correct, a.score_delta, ' +
     'q.type, q.content, q.option_a, q.option_b, q.option_c, q.option_d, q.option_e, q.option_f, ' +
     'q.answer, q.analysis, q.module ' +
     'FROM answers a JOIN questions q ON q.id = a.question_id ' +
-    'WHERE a.stage_id = ? AND a.team_id = ? AND a.student_id = ? AND a.is_correct <> 1 ' +
+    'WHERE ' + answerWhere + ' AND a.is_correct <> 1 ' +
     'ORDER BY a.id ASC',
-    [stageId, user.teamId, user.studentId]
+    answerParams
+  );
+  const answeredIds = new Set(
+    (await db.query(
+      'SELECT DISTINCT a.question_id FROM answers a WHERE ' + answerWhere,
+      answerParams
+    )).map((r) => Number(r.question_id))
   );
 
-  // 应用选项乱序映射，保证展示字母与答题时一致
-  const scopeKey = paper.scopeKeyFor(cfg, { studentId: user.studentId, teamId: user.teamId, playerIndex: 1 });
-  const papers = await db.query(
-    'SELECT question_id, option_map FROM stage_papers WHERE stage_id = ? AND scope_key = ?',
-    [stageId, scopeKey]
-  );
-  const mapByQuestion = new Map(papers.map((p) => [p.question_id, p.option_map || {}]));
+  // 未作答（跳过）的题：卷面上有、但没有任何作答记录
+  const paperIds = [...mapByQuestion.keys()].map(Number);
+  // 卷面上存在、但没有任何答题记录的题目（真正被跳过、交卷时也未被扣分的）
+  const skippedIds = paperIds.filter((id) => !answeredIds.has(id));
+  const skipped = skippedIds.length
+    ? await db.query(
+        'SELECT id AS question_id, type, content, option_a, option_b, option_c, option_d, option_e, option_f, ' +
+        '       answer, analysis, module FROM questions WHERE id IN (' + skippedIds.map(() => '?').join(',') + ')',
+        skippedIds
+      )
+    : [];
+  skipped.forEach((s) => {
+    s.user_answer = null;
+    s.is_correct = 0;
+    s.score_delta = 0;
+    s.__skipped = true;
+  });
 
-  const wrong = rows.map((r) => {
+  const allRows = [...rows, ...skipped].sort((a, b) => Number(a.question_id) - Number(b.question_id));
+
+  const wrong = allRows.map((r) => {
     const map = mapByQuestion.get(r.question_id) || {};
     const letters = paper.optionLetters(r);
     const options = letters
@@ -420,7 +510,9 @@ async function getWrongBook(stageId, user) {
       analysis: r.analysis,
       module: r.module,
       scoreDelta: Number(r.score_delta),
-      isCorrect: r.is_correct
+      isCorrect: r.is_correct,
+      // 未作答被标记出来，前端可提示"未作答"
+      skipped: !!r.__skipped
     };
   });
 
@@ -429,6 +521,7 @@ async function getWrongBook(stageId, user) {
     totalScore: Number(score.total_score),
     totalTime: Number(score.total_time),
     rank: await myRank(stageId, user, cfg),
+    wrongCount: wrong.length,
     wrong
   };
 }

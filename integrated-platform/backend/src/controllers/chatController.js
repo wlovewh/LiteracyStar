@@ -1,6 +1,19 @@
 'use strict';
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 const service = require('../services/chatService');
 const { ok, asyncHandler, AppError } = require('../utils/response');
+
+/** 聊天图片目录：backend/uploads/chat */
+const CHAT_IMG_DIR = path.resolve(__dirname, '..', '..', 'uploads', 'chat');
+const CHAT_EXT_BY_MIME = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/gif': '.gif',
+  'image/webp': '.webp'
+};
 
 /** 队长登录后确保本队聊天室存在 */
 exports.ensureRoom = asyncHandler(async (req, res) => {
@@ -51,6 +64,28 @@ exports.heartbeat = asyncHandler(async (req, res) => {
 });
 
 // 管理端
+/**
+ * 聊天室图片上传 (project.md 追加文档 聊天室增强)
+ * 接收 multipart 字段 image，存入 uploads/chat，返回可访问 URL。
+ * 前端拿到 URL 后作为 messageType='image' 的消息发送，
+ * 因此图片内容不落库、不进 WebSocket 帧，只传一个短 URL。
+ */
+exports.uploadImage = asyncHandler(async (req, res) => {
+  if (!req.file) throw new AppError('请选择要发送的图片');
+
+  const ext = CHAT_EXT_BY_MIME[req.file.mimetype];
+  if (!ext) throw new AppError('仅支持 PNG / JPG / GIF / WEBP 格式');
+
+  // 限制单张图片 5MB，避免占用过多磁盘与带宽
+  if (req.file.size > 5 * 1024 * 1024) throw new AppError('图片不能超过 5MB');
+
+  fs.mkdirSync(CHAT_IMG_DIR, { recursive: true });
+  const filename = Date.now().toString(36) + '_' + crypto.randomBytes(6).toString('hex') + ext;
+  fs.writeFileSync(path.join(CHAT_IMG_DIR, filename), req.file.buffer);
+
+  return ok(res, { url: '/platform-api/uploads/chat/' + filename, filename }, '上传成功');
+});
+
 exports.listRooms = asyncHandler(async (req, res) => ok(res, await service.listRooms()));
 exports.updateRoom = asyncHandler(async (req, res) =>
   ok(res, await service.updateRoom(req.params.id, req.body || {}), '保存成功'));

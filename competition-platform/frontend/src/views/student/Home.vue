@@ -116,7 +116,11 @@ function timeLabel(s) {
   return humanDuration(t.totalTime);
 }
 
-async function load(eventId) {
+/**
+ * @param {number} [eventId] 指定赛事
+ * @param {boolean} [userPicked] 是否为用户主动切换（主动切换失败才提示）
+ */
+async function load(eventId, userPicked = false) {
   loading.value = true;
   try {
     const data = await eventApi.current(eventId ?? selectedEventId.value ?? undefined);
@@ -129,11 +133,12 @@ async function load(eventId) {
     if (data.event) {
       localStorage.setItem(STORAGE_KEY, String(data.event.id));
     } else if (eventId !== undefined) {
-      // 上次选择的赛事已被停用或删除，清掉记忆并回到默认赛事
+      // 记忆里的赛事已被停用或删除：静默回退到默认赛事（序号最小）。
+      // 只有用户刚刚亲手选的那个不可用时才提示，避免每次进首页都弹警告。
       localStorage.removeItem(STORAGE_KEY);
-      ElMessage.warning('该赛事已不可用，已切换到其他赛事');
       selectedEventId.value = null;
-      await load();
+      if (userPicked) ElMessage.warning('该赛事已不可用，已切换到其他赛事');
+      await load(undefined, false);
     }
   } catch (e) {
     /* 拦截器已提示 */
@@ -144,7 +149,7 @@ async function load(eventId) {
 
 function onEventChange(id) {
   localStorage.setItem(STORAGE_KEY, String(id));
-  load(id);
+  load(id, true);
 }
 
 onMounted(() => {

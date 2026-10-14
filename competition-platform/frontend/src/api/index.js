@@ -81,9 +81,10 @@ export const examApi = {
 
 // ---------------- 排行榜 ----------------
 export const rankApi = {
-  rank: (id) => http.get('/rank/' + id),
+  // board: 'team' | 'individual'，不传则由后端按环节赛制取默认榜
+  rank: (id, board) => http.get('/rank/' + id, { params: board ? { board } : {} }),
   // 排行榜快照（与 SSE 推送结构一致，用于提交答案后立即刷新）
-  snapshot: (id) => http.get('/rank/' + id)
+  snapshot: (id, board) => http.get('/rank/' + id, { params: board ? { board } : {} })
 };
 
 // ---------------- 预警 ----------------

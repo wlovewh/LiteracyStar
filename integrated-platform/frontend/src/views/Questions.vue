@@ -14,7 +14,7 @@
         <el-form-item label="题干关键词">
           <el-input
             v-model="query.keyword"
-            placeholder="输入题干关键词"
+            placeholder="输入关键词，自动检索"
             clearable
             style="width: 260px"
             @keyup.enter="handleSearch"
@@ -97,7 +97,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { questionApi } from '@/api';
@@ -148,6 +148,25 @@ function handleSearch() {
   query.value.page = 1;
   load();
 }
+
+/**
+ * 输入即搜：关键词变化后 350ms 自动查询，无需手动点「查询」。
+ * 回车/点击「查询」仍可立即触发（会取消待执行的防抖）。
+ */
+let searchTimer = null;
+function scheduleSearch() {
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    searchTimer = null;
+    handleSearch();
+  }, 350);
+}
+
+watch(() => query.value.keyword, scheduleSearch);
+watch(() => [query.value.module, query.value.type, query.value.difficulty, query.value.source], () => {
+  if (searchTimer) clearTimeout(searchTimer);
+  handleSearch();
+});
 
 function handleReset() {
   query.value = { keyword: '', module: '', type: null, difficulty: null, source: '', page: 1, pageSize: query.value.pageSize };

@@ -178,6 +178,27 @@ CREATE TABLE stage_papers (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='环节抽题快照表';
 
 -- -------------------------------------------------------------
+-- stage_attempts 答题开始时间表
+-- 说明：用于服务端强制时限。仅靠前端倒计时无法阻止"时间到了继续答题"，
+--       因此记录每位选手/每支队伍的首次进入时间，超时后服务端拒绝继续作答。
+-- -------------------------------------------------------------
+DROP TABLE IF EXISTS stage_attempts;
+CREATE TABLE stage_attempts (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  stage_id    INT UNSIGNED NOT NULL                COMMENT '环节ID',
+  team_id     INT UNSIGNED NOT NULL                COMMENT '队伍ID',
+  student_id  VARCHAR(50) NOT NULL                 COMMENT '学号',
+  scope_key   VARCHAR(50) NOT NULL DEFAULT 'common' COMMENT '试卷归属',
+  started_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '首次进入时间',
+  submitted_at DATETIME DEFAULT NULL               COMMENT '交卷时间(为空表示未交)',
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_attempt (stage_id, team_id, student_id),
+  KEY idx_attempt_stage (stage_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='答题开始时间表';
+
+-- -------------------------------------------------------------
 -- system_logs 系统日志表（管理后台使用）
 -- -------------------------------------------------------------
 DROP TABLE IF EXISTS system_logs;

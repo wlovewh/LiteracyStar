@@ -46,7 +46,8 @@ async function api(m, p, { token, body } = {}) {
   console.log('');
   console.log('=== 默认（不传 eventId） ===');
   const dDef = await api('GET', '/api/events/current', { token: st });
-  check('取 id 最大的启用赛事', dDef.json.data.event.id === Math.max(...av.json.data.map(e => e.id)), dDef.json.data.event.id);
+  // 第八轮起默认进入"序号最小"的启用赛事（不再跳最新建的）
+check('默认进入序号最小的启用赛事', dDef.json.data.event.id === Math.min(...av.json.data.map(e => e.id)), dDef.json.data.event.id);
 
   console.log('');
   console.log('=== 停用后不再可选 ===');
