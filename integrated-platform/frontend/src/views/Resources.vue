@@ -5,7 +5,8 @@
         <div class="page-title">资源收录</div>
         <div class="text-sub">共 {{ totalSites }} 个资源网站，按分类浏览或直接搜索</div>
       </div>
-      <el-button v-if="auth.isAdmin" type="primary" @click="openSiteDialog()">新增网站</el-button>
+      <!-- 资源收录是面向学生的浏览页，不提供任何增删改入口；
+           网站的新增 / 编辑 / 删除统一在「管理后台 → 资源管理」中完成 -->
     </div>
 
     <div class="resource-layout">
@@ -67,10 +68,6 @@
                 <div class="site-meta">
                   <el-tag size="small" effect="plain">{{ s.category_name }}</el-tag>
                   <span class="text-sub">访问 {{ s.visit_count }} 次</span>
-                  <span v-if="auth.isAdmin" class="admin-actions" @click.stop>
-                    <el-button link type="primary" size="small" @click="openSiteDialog(s)">编辑</el-button>
-                    <el-button link type="danger" size="small" @click="removeSite(s)">删除</el-button>
-                  </span>
                 </div>
               </div>
             </div>

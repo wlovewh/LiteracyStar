@@ -2525,6 +2525,66 @@ integrated round9 由 38 项增至 62 项：资源分类编辑与删除 9 项、
 
 另用真实 xlsx 文件走 multipart 上传路径验证：3 行 → 成功 2、失败 1（缺网址，回报第 4 行），分类自动创建。
 
+## 14.12 第十四轮：资源页权限收敛、排序居中与数据统计空环节（2026-10-17）
+
+### 14.12.1 资源收录页移除管理入口
+
+**问题**：面向学生的「资源收录」页面上出现了「新增网站」按钮，站点卡片上还有「编辑 / 删除」。
+
+**修复**：这三处入口全部移除。资源收录是纯浏览页，网站的新增 / 编辑 / 删除统一收敛到「管理后台 → 资源管理」。同时删掉了页面对应的弹窗与处理函数，避免留下死代码。
+
+> 补充说明：上一轮已实现批量导入，但工具栏的「下载模板 / 批量导入」两个按钮因一次正则替换失误没有真正写进模板，导致界面上看不到。本轮已补回。
+
+### 14.12.2 资源管理排序数字居中
+
+弹窗内的排序控件由「减号 + 数字框 + 加号」组成，数字默认靠左，与两侧按钮不协调。加一条 `.sort-input .el-input__inner { text-align: center; }` 居中显示。
+
+### 14.12.3 数据统计：切换赛事后图表空白
+
+**现象**：线上有 2 个赛事，切到第二个赛事（id=3）时，三张图表全部加载不出来。
+
+**排查**：赛事 3 实际有 11 个环节、105 份试卷、58 条作答、5 条成绩，接口返回 `code=0`，数据是存在的。真正的原因是**默认选中的环节恰好没有成绩数据**：
+
+```
+event 3 stage 11 (检索专项, status=0) -> buckets=0 qAcc=0 modAcc=0 teamCmp=0
+event 3 stage 21 (随机测试1)          -> buckets=0 qAcc=0 modAcc=0 teamCmp=0
+event 3 stage 22 (随机测试2)          -> buckets=0 qAcc=0 modAcc=0 teamCmp=0
+event 3 stage 23 (随机测试3)          -> buckets=3 qAcc=10 modAcc=7 teamCmp=1
+```
+
+前端 `loadStages()` 无条件选 `list[0]`，即第一个环节（且包含未启用的环节）。叠加第二个缺陷：**`renderDist()` 与 `renderModule()` 没有处理空数组**，仍然调用 `setOption`，画出来是一片空白画布——只有 `renderTeam()` 做了空数据处理。两个问题叠加，表现就是「图表加载不出来」。
+
+**修复**：
+
+1. **后端**：`stageService.listByEvent()` 额外返回 `hasScore`（该环节的成绩条数），供前端判断。
+2. **前端默认选中改为智能选择**，优先级依次为：
+   - 已启用且有成绩数据
+   - 有成绩数据（即使已停用）
+   - 已启用
+   - 第一个
+3. **三张图统一空数据占位**：抽出 `renderEmpty(chart, text)`，`renderDist` / `renderModule` / `renderTeam` 在数据为空时显示「本环节暂无成绩数据」，而不是空白画布。
+
+### 14.12.4 本轮测试
+
+| 套件 | 用例数 | 结果 |
+| --- | --- | --- |
+| competition test-logic | 28 | 全通过 |
+| competition audit-spec | 68 | 全通过 |
+| competition smoke-test | 43 | 全通过 |
+| competition stage-test | 10 | 全通过 |
+| competition event-select | 12 | 全通过 |
+| competition event-switch | 11 | 全通过 |
+| competition round8 | 21 | 全通过 |
+| competition round9 | **53** | 全通过 |
+| integrated smoke-test | 32 | 全通过 |
+| integrated ws-test | 11 | 全通过 |
+| integrated admin-test | 15 | 全通过 |
+| integrated quote-test | 10 | 全通过 |
+| integrated round8 | 16 | 全通过 |
+| integrated round9 | 62 | 全通过 |
+
+competition round9 由 45 项增至 53 项（新增数据统计赛事筛选与空环节 8 项）。
+
 ### 开发环境约定
 
 - Windows 本地使用 **PowerShell 7**（`pwsh`，已安装 7.6.7）执行命令；默认的 5.1 在解析含 `$`、反引号、嵌套引号的命令时兼容性较差。

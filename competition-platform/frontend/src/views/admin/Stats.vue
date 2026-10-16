@@ -117,10 +117,29 @@ function typeLabel(t) {
 // 统一图表配色 —— 遵循禁用绿色系规范
 const PALETTE = ['#1A3A5C', '#2B5EA7', '#5A7FA8', '#8FA8C4', '#F39C12', '#E74C3C', '#C08457'];
 
+/**
+ * 在图表上显示「暂无数据」占位。
+ *
+ * 之前只有 renderTeam 处理了空数据，renderDist / renderModule 在空数组时
+ * 仍然走 setOption，结果是一片空白画布——看起来就像「图表加载不出来」。
+ */
+function renderEmpty(chart, text) {
+  chart.clear();
+  chart.setOption({
+    title: {
+      text: text || '本环节暂无成绩数据',
+      left: 'center',
+      top: 'middle',
+      textStyle: { color: '#7F8C8D', fontSize: 14, fontWeight: 400 }
+    }
+  }, true);
+}
+
 function renderDist() {
   if (!distRef.value) return;
   if (!distChart) distChart = echarts.init(distRef.value);
   const buckets = data.distribution.buckets || [];
+  if (!buckets.length) return renderEmpty(distChart, '本环节暂无成绩分布');
   distChart.setOption({
     color: PALETTE,
     tooltip: { trigger: 'axis' },
@@ -140,6 +159,7 @@ function renderModule() {
   if (!moduleRef.value) return;
   if (!moduleChart) moduleChart = echarts.init(moduleRef.value);
   const rows = data.moduleAccuracy || [];
+  if (!rows.length) return renderEmpty(moduleChart, '本环节暂无模块数据');
   moduleChart.setOption({
     color: ['#2B5EA7'],
     tooltip: {},
@@ -168,18 +188,7 @@ function renderTeam() {
   if (!teamChart) teamChart = echarts.init(teamRef.value);
   const rows = data.teamComparison || [];
 
-  if (!rows.length) {
-    teamChart.clear();
-    teamChart.setOption({
-      title: {
-        text: '本环节暂无成绩数据',
-        left: 'center',
-        top: 'middle',
-        textStyle: { color: '#7F8C8D', fontSize: 14, fontWeight: 400 }
-      }
-    }, true);
-    return;
-  }
+  if (!rows.length) return renderEmpty(teamChart);
 
   const stageName = stages.value.find((s) => s.id === stageId.value)?.name || '';
   const isIndividual = rows.some((r) => r.memberCount !== undefined);
@@ -268,7 +277,13 @@ async function loadEvents() {
   }
 }
 
-/** 载入当前赛事下的环节，并默认选中第一个 */
+/**
+ * 载入当前赛事下的环节，并智能选中默认环节。
+ *
+ * 之前无条件选 list[0]：若第一个环节恰好没有成绩数据（例如未启用的
+ * 「检索专项」），切换赛事后三张图全是空的，看起来就像「图表加载不出来」。
+ * 现在优先选中第一个有成绩数据的环节；都没有数据时才退回第一个。
+ */
 async function loadStages() {
   stages.value = [];
   stageId.value = null;
@@ -276,7 +291,15 @@ async function loadStages() {
   try {
     const list = await eventApi.stages(eventId.value);
     stages.value = list;
-    if (list.length) stageId.value = list[0].id;
+    if (!list.length) return;
+
+    // 已启用且有成绩数据的环节优先；其次是启用的；最后才用第一个
+    const picked =
+      list.find((s) => Number(s.status) === 1 && Number(s.hasScore) > 0) ||
+      list.find((s) => Number(s.hasScore) > 0) ||
+      list.find((s) => Number(s.status) === 1) ||
+      list[0];
+    stageId.value = picked.id;
   } catch (e) {
     /* 拦截器已提示 */
   }

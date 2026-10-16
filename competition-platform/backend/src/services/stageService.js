@@ -3,13 +3,21 @@ const db = require('../config/db');
 const { AppError } = require('../utils/response');
 const cfgMod = require('../config/stageConfig');
 
-/** 环节列表（含摘要信息，供后台环节管理页使用） */
+/**
+ * 环节列表（含摘要信息，供后台环节管理页使用）。
+ *
+ * 额外带出 hasScore：该环节是否已有成绩数据。
+ * 数据统计页据此把默认选中项落在"有数据的环节"上，避免切赛事后
+ * 默认选中一个空环节、三张图全空。
+ */
 async function listByEvent(eventId) {
   const rows = await db.query(
-    'SELECT id, event_id, name, sort_order, status, config, created_at, updated_at FROM stages WHERE event_id = ? ORDER BY sort_order ASC, id ASC',
+    'SELECT s.id, s.event_id, s.name, s.sort_order, s.status, s.config, s.created_at, s.updated_at, ' +
+    '(SELECT COUNT(*) FROM stage_scores ss WHERE ss.stage_id = s.id) AS score_count ' +
+    'FROM stages s WHERE s.event_id = ? ORDER BY s.sort_order ASC, s.id ASC',
     [eventId]
   );
-  return rows.map(cfgMod.summarize);
+  return rows.map((r) => ({ ...cfgMod.summarize(r), hasScore: Number(r.score_count) || 0 }));
 }
 
 /**

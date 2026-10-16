@@ -470,7 +470,51 @@ async function api(method, path, { token, body } = {}) {
   }
 
   console.log('');
-  console.log('RESULT: ' + pass + ' passed, ' + fail + ' failed');
+  console.log('');
+console.log('=== ⑩ 数据统计：赛事筛选与空环节 ===');
+{
+  const alg = await api('POST', '/auth/admin/login', { body: { username: 'admin', password: 'admin123' } });
+  const tk = alg.json.data.token;
+  check('管理员登录', alg.json.code === 0, alg.json.message);
+
+  const evs = await api('GET', '/events', { token: tk });
+  check('赛事列表可访问', evs.json.code === 0, evs.json.message);
+  const events = evs.json.data || [];
+  check('存在多个赛事时逐一校验', events.length >= 1, events.length);
+
+  for (const ev of events) {
+    const st = await api('GET', '/events/' + ev.id + '/stages', { token: tk });
+    check('赛事 ' + ev.id + ' 环节列表可访问', st.json.code === 0, st.json.message);
+    const list = st.json.data || [];
+    check('赛事 ' + ev.id + ' 环节均带 hasScore', list.every((x) => x.hasScore !== undefined), list.map((x) => x.hasScore));
+
+    // 每个环节的统计接口都应正常返回（空数据也要 code=0，而不是报错）
+    let allOk = true;
+    let emptyOk = true;
+    for (const stg of list) {
+      const r = await api('GET', '/admin/stats?stageId=' + stg.id, { token: tk });
+      if (r.json.code !== 0) { allOk = false; break; }
+      const d = r.json.data || {};
+      const buckets = (d.distribution && d.distribution.buckets) || [];
+      // 无成绩的环节必须返回空数组而非 undefined，前端才能画占位图
+      if (!buckets.length && (!Array.isArray(d.questionAccuracy) || !Array.isArray(d.moduleAccuracy) || !Array.isArray(d.teamComparison))) {
+        emptyOk = false;
+      }
+    }
+    check('赛事 ' + ev.id + ' 全部环节统计接口正常', allOk, ev.id);
+    check('赛事 ' + ev.id + ' 空环节返回空数组而非 undefined', emptyOk, ev.id);
+
+    // 默认选中逻辑：优先落到有成绩的环节
+    const withScore = list.find((x) => Number(x.hasScore) > 0);
+    const enabled = list.find((x) => Number(x.status) === 1);
+    const picked = withScore || enabled || list[0];
+    if (list.length) {
+      check('赛事 ' + ev.id + ' 能选出默认环节', !!picked, picked);
+    }
+  }
+}
+
+console.log('RESULT: ' + pass + ' passed, ' + fail + ' failed');
   if (fails.length) console.log('FAILED: ' + fails.join(' | '));
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('FATAL', e.message); process.exit(1); });

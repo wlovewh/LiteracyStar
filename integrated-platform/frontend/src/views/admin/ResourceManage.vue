@@ -37,12 +37,13 @@
             <el-input
               v-model="siteKeyword"
               placeholder="搜索网站"
-             
               clearable
-              style="width: 160px"
+              style="width: 220px"
               @keyup.enter="loadSites"
             />
-            <el-button @click="loadSites">查询</el-button>
+            <el-button type="primary" @click="loadSites">查询</el-button>
+            <el-button @click="downloadTemplate">下载模板</el-button>
+            <el-button @click="importDialog = true">批量导入</el-button>
             <el-button type="primary" @click="openSiteDialog()">新增网站</el-button>
           </div>
         </div>
@@ -581,6 +582,10 @@ onMounted(() => {
 .sort-input .el-button {
   width: 36px;
   padding: 0;
+}
+/* 数字居中显示（默认靠左，视觉上与两侧 +/- 不齐） */
+.sort-input .el-input__inner {
+  text-align: center;
 }
 
 /* 导入结果 */
