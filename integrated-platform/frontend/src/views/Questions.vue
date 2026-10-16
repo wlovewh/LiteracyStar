@@ -8,11 +8,21 @@
       <el-button v-if="total" @click="exportCsv" :loading="exporting">导出 CSV</el-button>
     </div>
 
-    <!-- 管理员关闭检索功能时的明确提示 -->
+    <!-- 未登录且没有邀请码：提示先登录 -->
     <el-alert
-      v-if="!searchEnabled"
+      v-if="needLogin"
+      title="题库检索需要先登录"
+      description="题库属于内部资源。请使用访问密钥登录，或通过邀请码进入聊天室后再检索。"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="closed-alert"
+    />
+    <!-- 已通过邀请码进入聊天室，但管理员关闭了访客检索 -->
+    <el-alert
+      v-else-if="!searchEnabled"
       title="题库检索功能当前未开放"
-      description="管理员已在后台关闭题库检索，请联系管理员开启后再使用。"
+      description="管理员已关闭访客检索，请联系管理员开启后再使用。"
       type="warning"
       :closable="false"
       show-icon
@@ -109,10 +119,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { questionApi } from '@/api';
+import { getInviteCode } from '@/api/http';
 import { useAuthStore } from '@/stores/auth';
 import AppPager from '@/components/AppPager.vue';
 
@@ -135,13 +146,32 @@ async function loadFacets() {
   }
 }
 
-/** 检索开关：管理员可在后台关闭题库检索，关闭时给出明确提示而非报错 */
-const searchEnabled = ref(true);
+/**
+ * 访客检索开关：管理员可在后台关闭「未登录访客」的题库检索。
+ *
+ * 注意两点：
+ * 1. 这个开关只约束未登录访客。已登录用户始终可以检索——
+ *    之前前端错误地把它当成"全站开关"，导致登录后反而看不到题库。
+ * 2. 访客还必须持有有效邀请码（即聊天室成员），否则题库连同答案
+ *    会对任意匿名访问者公开。
+ */
+const guestSearchEnabled = ref(true);
+
+/** 当前访客是否持有邀请码（聊天室成员身份） */
+const hasInvite = computed(() => !!getInviteCode());
+
+/** 当前是否可以检索 */
+const searchEnabled = computed(() =>
+  auth.isLoggedIn || (guestSearchEnabled.value && hasInvite.value)
+);
+
+/** 未登录且未持有邀请码：需要先登录 */
+const needLogin = computed(() => !auth.isLoggedIn && !hasInvite.value);
 
 async function loadSettings() {
   try {
     const s = await questionApi.getSettings();
-    searchEnabled.value = !(s && s.searchEnabled === false);
+    guestSearchEnabled.value = !(s && s.searchEnabled === false);
   } catch (e) {
     /* 读取失败时按开放处理，避免误挡用户 */
   }

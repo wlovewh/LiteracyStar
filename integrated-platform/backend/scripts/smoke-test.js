@@ -43,7 +43,8 @@ async function api(m, p, { token, body } = {}) {
   check('检索到题目（来自模拟平台库）', qs.json.code === 0 && qs.json.data.total > 0, qs.json.data);
   check('题目含选项', qs.json.data.list[0].options.length > 0, qs.json.data.list[0]);
   check('题目含答案', !!qs.json.data.list[0].answer);
-  const facets = await api('GET', '/questions/facets');
+  // 题库检索自第十一轮起需要登录（或持有效邀请码的聊天室访客）
+  const facets = await api('GET', '/questions/facets', { token: ut });
   check('筛选项可用', facets.json.code === 0 && facets.json.data.modules.length > 0, facets.json.data);
 
   console.log('=== 关键词提取 (7.5) ===');

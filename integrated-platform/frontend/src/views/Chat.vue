@@ -305,6 +305,8 @@ function saveSession() {
       room: room.value,
       memberKey: myKey.value,
       memberName: myName.value,
+      // 记录进入本聊天室所用的邀请码：题库检索凭它放行访客身份
+      inviteCode: room.value.invite_code || inviteCode.value || '',
       joinedAt: Date.now()
     }));
   } catch (e) { /* 隐私模式下写入失败可忽略 */ }
@@ -396,6 +398,8 @@ async function joinByInvite() {
   joining.value = true;
   try {
     const r = await chatApi.byInvite(code);
+    // 记录邀请码，供题库检索以访客身份放行
+    if (r) r.invite_code = code;
     await enterRoom(r);
   } catch (e) {
     /* 错误已提示 */

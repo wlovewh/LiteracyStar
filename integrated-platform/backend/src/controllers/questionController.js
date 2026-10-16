@@ -2,11 +2,8 @@
 const service = require('../services/questionService');
 const { ok, asyncHandler, AppError } = require('../utils/response');
 
+// 准入由 requireQuestionAccess 中间件负责（密钥登录用户，或持有效邀请码的访客）。
 exports.search = asyncHandler(async (req, res) => {
-  // 无密钥访客仅在管理员开启检索功能时可用 (6.3)
-  if (!req.auth && !(await service.isSearchEnabled())) {
-    throw new AppError('题库检索功能当前未开放', 403, 403);
-  }
   await service.trackSearch();
   return ok(res, await service.search(req.query));
 });

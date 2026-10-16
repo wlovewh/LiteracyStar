@@ -83,6 +83,49 @@ async function api(m, p, { token, body } = {}) {
   await api('PUT', '/admin/backup/config', { token: tk, body: { enabled: false, hour: 3, minute: 0, keep: 7 } });
 
   console.log('');
+  console.log('=== 题库检索准入（第十一轮修复）===');
+  {
+    // 开关只约束访客；已登录用户始终可检索。
+    // 之前的 bug：前端把开关当成"全站开关"，登录后反而看不到题库。
+    await api('PUT', '/questions/settings', { token: tk, body: { searchEnabled: true } });
+
+    const anon = await api('GET', '/questions/search?keyword=' + encodeURIComponent('信息'));
+    check('匿名访客无邀请码被拒绝', anon.status === 401, { s: anon.status, m: anon.json && anon.json.message });
+
+    const ul = await api('POST', '/auth/login', { body: { keyValue: 'USER2026KEY' } });
+    const ut = ul.json.data.token;
+    const authed = await api('GET', '/questions/search?keyword=' + encodeURIComponent('信息'), { token: ut });
+    check('已登录用户可检索', authed.json.code === 0 && authed.json.data.total > 0, authed.json.message);
+
+    await api('PUT', '/questions/settings', { token: tk, body: { searchEnabled: false } });
+    const authed2 = await api('GET', '/questions/search?keyword=' + encodeURIComponent('信息'), { token: ut });
+    check('关闭开关后已登录用户仍可检索', authed2.json.code === 0 && authed2.json.data.total > 0, authed2.json.message);
+    const anon2 = await api('GET', '/questions/search?keyword=x');
+    check('关闭开关后匿名仍被拒绝', anon2.status === 401 || anon2.status === 403, anon2.status);
+
+    // 邀请码访客：开关开启时可用，关闭时不可用
+    await api('PUT', '/questions/settings', { token: tk, body: { searchEnabled: true } });
+    const room = await api('POST', '/chat/rooms', { token: tk, body: { teamId: 96, name: 'R11 准入测试室' } });
+    const rid = room.json.data.id;
+    const inv = await api('POST', '/chat/rooms/' + rid + '/invite', { token: tk });
+    const code = inv.json.data.inviteCode;
+
+    const guestOk = await fetch(BASE + '/questions/search?keyword=' + encodeURIComponent('信息'), { headers: { 'X-Invite-Code': code } });
+    const guestOkJ = await guestOk.json();
+    check('持有效邀请码的访客可检索', guestOkJ.code === 0 && guestOkJ.data.total > 0, guestOkJ.message);
+
+    const guestBad = await fetch(BASE + '/questions/search?keyword=x', { headers: { 'X-Invite-Code': '000000' } });
+    check('无效邀请码被拒绝', guestBad.status !== 200, guestBad.status);
+
+    await api('PUT', '/questions/settings', { token: tk, body: { searchEnabled: false } });
+    const guestOff = await fetch(BASE + '/questions/search?keyword=x', { headers: { 'X-Invite-Code': code } });
+    check('关闭开关后邀请码访客被拒绝', guestOff.status === 403, guestOff.status);
+
+    await api('PUT', '/questions/settings', { token: tk, body: { searchEnabled: true } });
+    await api('DELETE', '/chat/rooms/' + rid + '/messages', { token: tk });
+  }
+
+  console.log('');
   console.log('RESULT: ' + pass + ' passed, ' + fail + ' failed');
   if (fails.length) console.log('FAILED: ' + fails.join(' | '));
   process.exit(fail ? 1 : 0);

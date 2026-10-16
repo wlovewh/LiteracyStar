@@ -1,13 +1,13 @@
 'use strict';
 const router = require('express').Router();
 const ctrl = require('../controllers/questionController');
-const { requireAdmin, optionalAuth } = require('../middlewares/auth');
+const { requireAdmin, requireQuestionAccess } = require('../middlewares/auth');
 const upload = require('../middlewares/upload');
 
-// 检索（登录用户与开放状态下的访客可用）
-router.get('/search', optionalAuth, ctrl.search);
-router.get('/facets', optionalAuth, ctrl.facets);
-router.get('/export', optionalAuth, ctrl.exportCsv);
+// 检索（密钥登录用户，或持有效邀请码的聊天室访客）
+router.get('/search', requireQuestionAccess, ctrl.search);
+router.get('/facets', requireQuestionAccess, ctrl.facets);
+router.get('/export', requireQuestionAccess, ctrl.exportCsv);
 router.post('/extract-keywords', ctrl.extractKeywords);
 router.post('/check-duplicate', ctrl.checkDuplicate);
 
@@ -24,6 +24,6 @@ router.put('/manage/:id', requireAdmin, ctrl.update);
 router.delete('/manage/:id', requireAdmin, ctrl.remove);
 
 // 单题详情（放在最后，避免吞掉上面的具名路由）
-router.get('/:id', optionalAuth, ctrl.detail);
+router.get('/:id', requireQuestionAccess, ctrl.detail);
 
 module.exports = router;

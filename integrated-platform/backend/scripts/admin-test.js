@@ -34,8 +34,9 @@ async function api(m, p, { token, body } = {}) {
   const updated = await api('PUT', '/questions/manage/' + qid, { token: at, body: { difficulty: 4, answer: 'B' } });
   check('更新题目', updated.json.code === 0 && updated.json.data.difficulty === 4 && updated.json.data.answer === 'B', updated.json.data);
 
-  const detail = await api('GET', '/questions/' + qid);
-  check('详情回显', detail.json.data.answer === 'B', detail.json.data);
+  // 题库检索自第十一轮起需要登录（或持有效邀请码的聊天室访客）
+  const detail = await api('GET', '/questions/' + qid, { token: at });
+  check('详情回显', detail.json.data && detail.json.data.answer === 'B', detail.json.data);
 
   console.log('=== 批量导入 ===');
   const tpl = await api('GET', '/questions/manage/template', { token: at });
