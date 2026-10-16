@@ -95,8 +95,12 @@ const api = async (base, m, p, { token, body } = {}) => {
   const qset = await api(I, 'GET', '/questions/settings');
   check('题库检索开关可读', qset.json.code === 0, qset.json.message);
   const searchOn = !(qset.json.data && qset.json.data.searchEnabled === false);
-  const iq = await api(I, 'GET', '/questions/search?keyword=信息');
-  check('跨库题库检索（按开关状态）', searchOn ? iq.json.code === 0 : iq.json.code !== 0, { searchOn, msg: iq.json.message });
+  // 题库检索需登录（第十一轮起）：用管理员令牌访问
+  const iq = await api(I, 'GET', '/questions/search?keyword=信息', { token: iat });
+  check('跨库题库检索', iq.json.code === 0 && iq.json.data.total > 0, iq.json.message);
+  // 未登录必须被拒绝
+  const anonQ = await api(I, 'GET', '/questions/search?keyword=信息');
+  check('未登录检索题库被拒绝', anonQ.status === 401, anonQ.status);
   const kw = await api(I, 'POST', '/questions/extract-keywords', { body: { content: '请检索关于人工智能技术发展现状的学术文献资料' } });
   check('关键词提取', kw.json.code === 0 && (kw.json.data.keywords || []).length > 0, kw.json.message);
 
