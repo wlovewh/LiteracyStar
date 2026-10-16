@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import { getToken, getUser } from '@/api/http';
+import { useLoginPromptStore } from '@/stores/loginPrompt';
 
 const routes = [
   { path: '/', name: 'home', component: () => import('@/views/Home.vue'), meta: { title: '首页' } },
@@ -50,12 +51,16 @@ router.beforeEach((to, from, next) => {
   const loggedIn = !!(token && user);
 
   if (to.meta.requiresAuth && !loggedIn) {
-    // 未登录访问受保护模块时，停留在首页并自动弹出密钥登录框
-    return next({ path: '/', query: { needAuth: '1', redirect: to.fullPath } });
+    // 未登录访问受保护模块时，停留在首页并弹出密钥登录框。
+    // 弹窗状态通过 store 传递（而不是 URL query）：query 会在地址栏残留，
+    // 导致再次点击同一模块时路由无变化、弹窗不再出现。
+    useLoginPromptStore().requireLogin(to.fullPath);
+    return next({ path: '/' });
   }
 
   if (to.meta.requiresAdmin && (!loggedIn || user.role !== 'admin')) {
-    return next({ path: '/', query: { needAdmin: '1' } });
+    useLoginPromptStore().requireLogin('/admin');
+    return next({ path: '/' });
   }
 
   return next();

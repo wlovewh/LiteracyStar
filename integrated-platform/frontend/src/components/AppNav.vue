@@ -21,7 +21,7 @@
         </el-tag>
         <el-button link type="primary" @click="handleLogout">退出</el-button>
       </template>
-      <el-button v-else link type="primary" @click="showLogin = true">密钥登录</el-button>
+      <el-button v-else link type="primary" @click="openLogin">密钥登录</el-button>
     </div>
 
     <!-- 密钥登录弹窗 -->
@@ -49,18 +49,25 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue';
+import { ref, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useAuthStore } from '@/stores/auth';
+import { useLoginPromptStore } from '@/stores/loginPrompt';
 
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
+const loginPrompt = useLoginPromptStore();
 
-const showLogin = ref(false);
 const keyValue = ref('');
 const loading = ref(false);
+
+/** 弹窗可见性由全局状态驱动，避免依赖会残留的 URL query */
+const showLogin = computed({
+  get: () => loginPrompt.visible,
+  set: (v) => { if (!v) loginPrompt.close(); else loginPrompt.visible = true; }
+});
 
 const links = [
   { path: '/', label: '首页' },
@@ -77,7 +84,13 @@ function isActive(path) {
   return route.path.startsWith(path);
 }
 
+/** 手动点击「密钥登录」 */
+function openLogin() {
+  loginPrompt.requireLogin(String(route.query.redirect || ''));
+}
+
 async function handleLogin() {
+  if (loading.value) return; // 防止回车连按重复提交
   const key = keyValue.value.trim();
   if (!key) return ElMessage.warning('请输入访问密钥');
 
@@ -85,12 +98,13 @@ async function handleLogin() {
   try {
     const user = await auth.login(key);
     ElMessage.success('登录成功');
-    showLogin.value = false;
+
+    const redirect = loginPrompt.redirect || String(route.query.redirect || '');
+    loginPrompt.close();
     keyValue.value = '';
 
     // 登录后回到被拦截的目标页面
-    const redirect = route.query.redirect;
-    if (redirect) router.push(String(redirect));
+    if (redirect) router.push(redirect);
     else if (user.role === 'admin' && route.query.needAdmin) router.push('/admin');
   } catch (e) {
     // 错误提示已由 http 拦截器统一弹出
@@ -105,14 +119,12 @@ function handleLogout() {
   if (route.meta.requiresAuth) router.push('/');
 }
 
-// 被守卫拦截跳回首页时，自动弹出密钥登录框
-watch(
-  () => route.query.needAuth,
-  (v) => {
-    if (v && !auth.isLoggedIn) showLogin.value = true;
-  },
-  { immediate: true }
-);
+// 弹窗由路由守卫通过 loginPrompt store 触发（见 router/index.js），
+// 这里不再监听 URL query —— 旧实现依赖会残留的 query，导致「点一次后没反应」。
+// 兼容旧链接：带 needAuth 参数进入时补一次触发。
+if (route.query.needAuth && !auth.isLoggedIn) {
+  loginPrompt.requireLogin(String(route.query.redirect || ''));
+}
 </script>
 
 <style scoped>

@@ -78,33 +78,23 @@ async function remove(id) {
  * 前台可参与的赛事列表（学生端赛事选择用）。
  * 只返回已启用的赛事，并附带已开启环节数量，便于前端展示。
  *
- * 可见性规则（project.md 赛事权限）：
- *   某赛事若在 event_teams 中没有任何记录 => 对全体队伍开放；
- *   一旦配置了白名单 => 只有名单内的队伍能看到。
+ * 可见性规则（project.md 赛事权限，默认不可见）：
+ *   赛事必须显式授权给队伍后才可见——event_teams 中存在该队伍的记录才返回。
+ *   未配置任何授权记录的赛事对全体队伍均不可见。
  *
- * @param {number|string} [teamId] 当前登录队伍；不传时只返回对全体开放的赛事
+ * @param {number|string} [teamId] 当前登录队伍；无队伍时不返回任何赛事
  */
 async function listForStudent(teamId) {
+  // 未登录/无队伍：无任何可见赛事
+  if (!teamId) return [];
+
   // 按 id 升序：默认进入序号最小的赛事，避免多赛事时总是跳到最新建的那个
-  const base =
-    'SELECT e.id, e.name, e.description, e.created_at, ' +
-    '(SELECT COUNT(*) FROM stages s WHERE s.event_id = e.id AND s.status = 1) AS active_stage_count ' +
-    'FROM events e WHERE e.status = 1 ';
-  const order = ' ORDER BY e.id ASC';
-
-  if (!teamId) {
-    // 未登录/无队伍：只暴露未设置白名单的赛事
-    return db.query(
-      base + 'AND NOT EXISTS (SELECT 1 FROM event_teams et WHERE et.event_id = e.id)' + order
-    );
-  }
-
-  // 白名单为空 或 本队在白名单内
   return db.query(
-    base +
-      'AND (NOT EXISTS (SELECT 1 FROM event_teams et WHERE et.event_id = e.id) ' +
-      '     OR EXISTS (SELECT 1 FROM event_teams et2 WHERE et2.event_id = e.id AND et2.team_id = ?))' +
-      order,
+    'SELECT e.id, e.name, e.description, e.created_at, ' +
+      '(SELECT COUNT(*) FROM stages s WHERE s.event_id = e.id AND s.status = 1) AS active_stage_count ' +
+      'FROM events e WHERE e.status = 1 ' +
+      'AND EXISTS (SELECT 1 FROM event_teams et WHERE et.event_id = e.id AND et.team_id = ?) ' +
+      'ORDER BY e.id ASC',
     [teamId]
   );
 }

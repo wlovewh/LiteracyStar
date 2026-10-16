@@ -14,7 +14,16 @@
         <div class="topbar-center">
           <div class="timer" :class="{ 'timer-urgent': remaining <= 60 }">
             <el-icon :size="18"><Clock /></el-icon>
-            <span>{{ formatDuration(remaining) }}</span>
+            <span>总时长 {{ formatDuration(remaining) }}</span>
+          </div>
+          <!-- 抢答/限时题：每题独立倒计时，由环节配置 perQuestionTime 决定 -->
+          <div
+            v-if="perQuestionLimit > 0"
+            class="timer timer-per-question"
+            :class="{ 'timer-urgent': questionRemaining <= 10 }"
+          >
+            <el-icon :size="18"><AlarmClock /></el-icon>
+            <span>本题 {{ formatDuration(questionRemaining) }}</span>
           </div>
           <div class="progress-text">{{ currentIndex + 1 }} / {{ questions.length }}</div>
         </div>
@@ -145,7 +154,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Clock, ArrowLeft, DArrowRight, Check } from '@element-plus/icons-vue';
+import { Clock, AlarmClock, ArrowLeft, DArrowRight, Check } from '@element-plus/icons-vue';
 import { examApi, rankApi } from '@/api';
 import { getToken, getUser } from '@/api/http';
 import { formatDuration, QUESTION_TYPE_LABEL } from '@/utils/format';
@@ -472,6 +481,13 @@ async function doSubmit(auto = false) {
 
 const totalTimeLimit = ref(0);
 
+/** 每题时限（秒）；0 表示不限，由环节配置 timeConfig.perQuestionTime 决定 */
+const perQuestionLimit = ref(0);
+/** 当前题剩余秒数 */
+const questionRemaining = ref(0);
+/** 当前题的截止时刻（墙上时钟） */
+let questionDeadlineAt = 0;
+
 /**
  * 每题实际用时（秒）。
  * 以墙上时钟为准，而不是每秒自减的计数器 —— 计数器在后台标签页会被
@@ -479,9 +495,11 @@ const totalTimeLimit = ref(0);
  */
 const questionStartedAt = ref(Date.now());
 
-/** 开始/重置当前题的计时起点 */
+/** 开始/重置当前题的计时起点（含每题倒计时） */
 function markQuestionStart() {
   questionStartedAt.value = Date.now();
+  questionTimedOut = false;
+  resetQuestionTimer();
 }
 
 /** 当前题已用秒数（至少 1 秒，避免出现 0） */
@@ -509,6 +527,16 @@ function startTimer(seconds) {
   const tick = () => {
     const left = Math.max(0, Math.round((deadlineAt - Date.now()) / 1000));
     remaining.value = left;
+
+    // 每题倒计时：到点自动提交当前题并进入下一题
+    if (perQuestionLimit.value > 0) {
+      const qLeft = Math.max(0, Math.round((questionDeadlineAt - Date.now()) / 1000));
+      questionRemaining.value = qLeft;
+      if (qLeft <= 0) {
+        onQuestionTimeout();
+      }
+    }
+
     if (left <= 0) {
       clearInterval(timer);
       timer = null;
@@ -524,6 +552,40 @@ function startTimer(seconds) {
 /** 当前已用秒数（供展示与补交使用） */
 function elapsedSeconds() {
   return Math.max(0, Math.round((Date.now() - (deadlineAt - totalTimeLimit.value * 1000)) / 1000));
+}
+
+/**
+ * 重置当前题的倒计时。
+ * 每次切题（含开始答题）都要调用，避免沿用上一题的剩余时间。
+ */
+function resetQuestionTimer() {
+  if (perQuestionLimit.value <= 0) return;
+  questionDeadlineAt = Date.now() + perQuestionLimit.value * 1000;
+  questionRemaining.value = perQuestionLimit.value;
+}
+
+/** 标记本题已超时，避免同一题重复触发 */
+let questionTimedOut = false;
+
+/** 单题超时：提交当前答案（若已选）并自动进入下一题 */
+async function onQuestionTimeout() {
+  if (questionTimedOut) return;
+  questionTimedOut = true;
+
+  await commitCurrent();
+
+  if (currentIndex.value >= questions.value.length - 1) {
+    ElMessage.warning('本题时间到，已是最后一题，系统自动交卷');
+    await doSubmit(true);
+    return;
+  }
+
+  ElMessage.warning('本题时间到，已自动进入下一题');
+  feedback.value = null;
+  currentIndex.value += 1;
+  markQuestionStart();
+  resetQuestionTimer();
+  questionTimedOut = false;
 }
 
 async function load() {
@@ -544,6 +606,9 @@ async function load() {
     });
     answers.value = map;
     submittedIds.value = done;
+
+    // 每题时限：抢答/限时环节由 timeConfig.perQuestionTime 指定，0 表示不限
+    perQuestionLimit.value = Number(data.stage && data.stage.perQuestionTime) || 0;
 
     startTimer(data.availableTime || 600);
     markQuestionStart();

@@ -14,11 +14,20 @@ async function api(m, p, { token, body } = {}) {
   const sl = await api('POST', '/api/auth/student/login', { body: { studentId: '2026001', password: '2026001' } });
   const st = sl.json.data.token;
 
+  // 赛事可见性改为「默认不可见，需显式授权」，先给该学生所在队伍授权
+  const me = await api('GET', '/api/auth/me', { token: st });
+  const myTeamId = me.json.data.user.teamId;
+  const allEvents = await api('GET', '/api/events', { token: at });
+  for (const e of allEvents.json.data) {
+    await api('PUT', '/api/events/' + e.id + '/teams', { token: at, body: { teamIds: [myTeamId] } });
+  }
+
   console.log('=== 学生可见赛事列表 ===');
   const av = await api('GET', '/api/events/available', { token: st });
   check('接口可用', av.status === 200 && av.json.code === 0, av.json);
   check('返回赛事数组', Array.isArray(av.json.data), typeof av.json.data);
   console.log('  赛事:', JSON.stringify(av.json.data.map(e => ({ id: e.id, name: e.name, active: e.active_stage_count }))));
+  check('授权后能看到赛事', av.json.data.length >= 1, av.json.data.length);
   check('每个赛事带已开启环节数', av.json.data.every(e => e.active_stage_count !== undefined));
 
   // 准备两个赛事，各自建环节

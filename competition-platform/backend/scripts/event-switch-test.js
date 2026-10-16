@@ -20,6 +20,16 @@ async function api(m, p, { token, body } = {}) {
   check('临时赛事创建成功', !!evB.id, created.json);
   const evA = (await api('GET', '/api/events', { token: at })).json.data.find(e => e.id !== evB.id);
 
+  // 赛事默认不可见：把新建的赛事授权给该学生所在队伍，否则学生端看不到
+  const sme = await api('GET', '/api/auth/me', { token: st });
+  const stuTeam = sme.json.data.user.teamId;
+  const evAteams = (await api('GET', '/api/events/' + evA.id + '/teams', { token: at })).json.data || [];
+  const evAids = evAteams.map((x) => x.teamId);
+  if (!evAids.includes(stuTeam)) {
+    await api('PUT', '/api/events/' + evA.id + '/teams', { token: at, body: { teamIds: [...evAids, stuTeam] } });
+  }
+  await api('PUT', '/api/events/' + evB.id + '/teams', { token: at, body: { teamIds: [stuTeam] } });
+
   const av = await api('GET', '/api/events/available', { token: st });
   console.log('学生可见赛事:', JSON.stringify(av.json.data.map(e => ({ id: e.id, name: e.name.slice(0, 18), active: e.active_stage_count }))));
   check('多赛事场景成立（>=2）', av.json.data.length >= 2, av.json.data.length);

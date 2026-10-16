@@ -16,11 +16,13 @@ exports.stages = asyncHandler(async (req, res) => {
 });
 
 /** 前台：可参与的赛事列表（学生端选择用，按队伍可见范围过滤） */
-exports.forStudent = asyncHandler(async (req, res) => ok(res, await service.listForStudent(req.auth && req.auth.teamId)));
+exports.forStudent = asyncHandler(async (req, res) =>
+  ok(res, await service.listForStudent(req.user && req.user.teamId))
+);
 
 /** 前台首页数据；可选 eventId 指定赛事 */
 exports.current = asyncHandler(async (req, res) =>
-  ok(res, await service.currentForStudent(req.query.eventId, req.auth && req.auth.teamId))
+  ok(res, await service.currentForStudent(req.query.eventId, req.user && req.user.teamId))
 );
 
 // ---------------- 赛事可见范围 ----------------

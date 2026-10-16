@@ -85,19 +85,31 @@
           <div style="flex: 1"></div>
           <el-input
             v-model="searchKeyword"
-            placeholder="搜索聊天记录"
+            placeholder="搜索聊天记录，回车定位"
             size="small"
-            style="width: 180px"
+            style="width: 200px"
             clearable
             @keyup.enter="searchHistory"
-          />
+            @clear="clearSearch"
+          >
+            <template #append>
+              <el-button :icon="Search" @click="searchHistory" />
+            </template>
+          </el-input>
         </div>
 
         <!-- 消息列表 -->
         <div ref="msgBox" class="chat-messages" @scroll="onScroll">
           <div v-if="searchResults.length" class="search-banner">
-            <span>找到 {{ searchResults.length }} 条匹配消息</span>
-            <el-button link type="primary" size="small" @click="clearSearch">清除搜索</el-button>
+            <span>
+              找到 {{ searchResults.length }} 条匹配消息
+              <template v-if="searchHitCount">，当前第 {{ searchIndex + 1 }} / {{ searchHitCount }} 条</template>
+            </span>
+            <span>
+              <el-button link type="primary" size="small" :disabled="searchHitCount < 2" @click="stepSearch(-1)">上一条</el-button>
+              <el-button link type="primary" size="small" :disabled="searchHitCount < 2" @click="stepSearch(1)">下一条</el-button>
+              <el-button link type="primary" size="small" @click="clearSearch">清除搜索</el-button>
+            </span>
           </div>
 
           <div v-if="!messages.length" class="chat-empty">
@@ -107,8 +119,9 @@
           <div
             v-for="m in messages"
             :key="m.id"
+            :ref="(el) => setRowRef(m.id, el)"
             class="msg-row"
-            :class="rowClass(m)"
+            :class="[rowClass(m), { 'is-highlight': highlightedId === m.id }]"
           >
             <div v-if="m.messageType !== 'system'" class="msg-sender">
               {{ m.senderName }}
@@ -244,7 +257,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { Picture } from '@element-plus/icons-vue';
+import { Picture, Search } from '@element-plus/icons-vue';
 import { chatApi } from '@/api';
 import { getGuest, setGuest, getToken } from '@/api/http';
 import { useAuthStore } from '@/stores/auth';
@@ -502,6 +515,12 @@ function wsUrl() {
 }
 
 function connect() {
+  // 已有连接（含正在建立的连接）时直接复用，避免反复重连。
+  // 旧实现无条件先 disconnect()：若上一个 socket 还处于 CONNECTING，
+  // close() 会触发浏览器报 "WebSocket is closed before the connection is established"，
+  // 并且每次进入页面都要重连一次，在线列表因此长时间为空。
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+
   disconnect();
   try {
     ws = new WebSocket(wsUrl());
@@ -512,6 +531,8 @@ function connect() {
 
   ws.onopen = () => {
     connected.value = true;
+    // 连上后主动拉一次在线成员，不必等下一次推送
+    loadOnline();
     heartbeatTimer = setInterval(() => {
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'heartbeat' }));
     }, 25000);
@@ -688,18 +709,84 @@ async function removeMessage(m) {
 }
 
 // ---------------- 搜索与滚动 ----------------
+
+/** 消息 id -> DOM 节点，用于搜索后定位 */
+const rowRefs = new Map();
+function setRowRef(id, el) {
+  if (el) rowRefs.set(id, el);
+  else rowRefs.delete(id);
+}
+
+/** 搜索命中的消息 id（按时间升序），以及当前定位到第几条 */
+const searchHits = ref([]);
+const searchIndex = ref(0);
+const searchHitCount = computed(() => searchHits.value.length);
+const highlightedId = ref(null);
+
 async function searchHistory() {
   const k = searchKeyword.value.trim();
   if (!k) return clearSearch();
   try {
-    searchResults.value = await chatApi.searchMessages(room.value.id, k);
-    if (!searchResults.value.length) ElMessage.info('没有找到匹配的消息');
+    const list = await chatApi.searchMessages(room.value.id, k);
+    searchResults.value = list || [];
+
+    if (!searchResults.value.length) {
+      searchHits.value = [];
+      highlightedId.value = null;
+      ElMessage.info('没有找到匹配的消息');
+      return;
+    }
+
+    // 命中的消息可能不在当前已加载的最近 50 条里：先把它们并进列表再定位
+    mergeSearchResultsIntoMessages();
+    // 按时间升序排列，默认定位到最早的一条（从前往后看更符合翻找习惯）
+    searchHits.value = searchResults.value
+      .map((m) => m.id)
+      .filter((id) => messages.value.some((x) => x.id === id))
+      .sort((a, b) => a - b);
+    searchIndex.value = 0;
+
+    await jumpToHit();
   } catch (e) { /* 错误已提示 */ }
+}
+
+/** 把搜索结果中尚未加载的消息并入消息列表，并按 id 排序 */
+function mergeSearchResultsIntoMessages() {
+  const known = new Set(messages.value.map((m) => m.id));
+  const extra = searchResults.value.filter((m) => !known.has(m.id));
+  if (!extra.length) return;
+  messages.value = [...messages.value, ...extra].sort((a, b) => Number(a.id) - Number(b.id));
+}
+
+/** 滚动到当前命中项并高亮 */
+async function jumpToHit() {
+  const id = searchHits.value[searchIndex.value];
+  if (id === undefined) return;
+  highlightedId.value = id;
+
+  await nextTick();
+  const el = rowRefs.get(id);
+  if (el && msgBox.value) {
+    // 在滚动容器内居中显示，便于确认上下文
+    const top = el.offsetTop - msgBox.value.clientHeight / 2 + el.clientHeight / 2;
+    msgBox.value.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+  }
+}
+
+/** 上一条 / 下一条 */
+async function stepSearch(delta) {
+  if (!searchHits.value.length) return;
+  const n = searchHits.value.length;
+  searchIndex.value = (searchIndex.value + delta + n) % n;
+  await jumpToHit();
 }
 
 function clearSearch() {
   searchKeyword.value = '';
   searchResults.value = [];
+  searchHits.value = [];
+  searchIndex.value = 0;
+  highlightedId.value = null;
 }
 
 function scrollToBottom() {
@@ -729,9 +816,20 @@ async function sendIncomingQuestion() {
 
 watch(() => route.query.questionId, (v) => { if (v && room.value) sendIncomingQuestion(); });
 
+/** 页面重新可见时立即恢复连接并刷新在线列表 */
+function onVisible() {
+  if (document.visibilityState !== 'visible') return;
+  if (!room.value) return;
+  connect();
+  if (ws && ws.readyState === WebSocket.OPEN) loadOnline();
+}
+
 onMounted(async () => {
   // Ctrl+V 粘贴图片：在页面任意位置粘贴都能上传
   window.addEventListener('paste', onPaste);
+  // 从其他标签页/页面切回时立刻恢复连接，避免在线列表长时间为空
+  document.addEventListener('visibilitychange', onVisible);
+  window.addEventListener('focus', onVisible);
 
   // 支持 URL 直接带邀请码进入
   if (route.query.invite) {
@@ -756,6 +854,8 @@ onBeforeUnmount(() => {
   // 切到其他页面时保留会话：只断开连接并暂停计时，不清除房间状态。
   // 房间状态已写入 localStorage，返回本页会自动恢复。
   window.removeEventListener('paste', onPaste);
+  document.removeEventListener('visibilitychange', onVisible);
+  window.removeEventListener('focus', onVisible);
   disconnect();
   pauseTimer();
   saveSession();

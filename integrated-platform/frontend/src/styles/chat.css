@@ -151,6 +151,14 @@
 .msg-actions { display: flex; gap: 8px; margin-top: 4px; opacity: 0; transition: opacity .18s ease; }
 .msg-row:hover .msg-actions { opacity: 1; }
 
+/* 搜索命中的消息：高亮定位 */
+.msg-row.is-highlight .msg-bubble {
+  box-shadow: 0 0 0 2px var(--c-primary-2);
+}
+.msg-row.is-highlight.is-other .msg-bubble {
+  background: var(--c-selected);
+}
+
 .msg-quote {
   border-left: 2px solid var(--c-primary-2);
   background: var(--c-bg);

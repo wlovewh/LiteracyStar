@@ -56,7 +56,12 @@ async function api(m, p, { token, body } = {}) {
   const room = await api('POST', '/chat/rooms', { body: { teamId: 1, name: '星海队聊天室' } });
   check('创建/获取聊天室', room.json.code === 0 && room.json.data.invite_code, room.json);
   const roomId = room.json.data.id;
-  const byInvite = await api('GET', '/chat/rooms/by-invite?code=' + room.json.data.invite_code);
+
+  // 聊天室会被复用，其邀请码可能已过期（默认 24 小时）。
+  // 先刷新一次，避免测试结果依赖上次运行的日期。
+  const fresh = await api('POST', '/chat/rooms/' + roomId + '/invite', {});
+  check('刷新邀请码', fresh.json.code === 0 && fresh.json.data.inviteCode, fresh.json);
+  const byInvite = await api('GET', '/chat/rooms/by-invite?code=' + fresh.json.data.inviteCode);
   check('邀请码可查到聊天室', byInvite.json.data.id === roomId, byInvite.json);
   const badInvite = await api('GET', '/chat/rooms/by-invite?code=000000');
   check('无效邀请码被拒绝', badInvite.json.code !== 0, badInvite.json);

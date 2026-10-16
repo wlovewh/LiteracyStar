@@ -32,6 +32,22 @@ function removeClient(roomId, ws) {
   if (!set.size) rooms.delete(roomId);
 }
 
+/**
+ * 同一成员是否还有其它存活连接。
+ *
+ * 断线重连时新连接先建立、旧连接后关闭；若旧连接无条件 setOffline，
+ * 会把新连接刚写入的在线状态删掉，表现为「明明在线却显示无在线人员」。
+ */
+function hasOtherSocket(roomId, identityKey, closingWs) {
+  const set = rooms.get(roomId);
+  if (!set) return false;
+  for (const ws of set) {
+    if (ws === closingWs) continue;
+    if (ws.identityKey === identityKey && ws.readyState === ws.OPEN) return true;
+  }
+  return false;
+}
+
 function broadcastLocal(roomId, payload) {
   const set = rooms.get(roomId);
   if (!set) return;
@@ -100,6 +116,7 @@ function init(server) {
 
     ws.roomId = roomId;
     ws.identity = identity;
+    ws.identityKey = identity.key; // 供断线重连时判断同成员是否仍有其它连接
     ws.isAlive = true;
 
     addClient(roomId, ws);
@@ -166,8 +183,11 @@ function init(server) {
 
     ws.on('close', async () => {
       unsubscribe();
+      // 先把本连接移出房间，再判断是否还有同成员的其它连接
       removeClient(roomId, ws);
-      await chatService.setOffline(roomId, identity.key);
+      if (!hasOtherSocket(roomId, identity.key, ws)) {
+        await chatService.setOffline(roomId, identity.key);
+      }
       await broadcastOnline(roomId);
     });
 

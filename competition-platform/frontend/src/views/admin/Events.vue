@@ -68,8 +68,7 @@
       <div class="visible-tip">
         <p><strong>{{ visibleForm.eventName }}</strong></p>
         <p class="text-sub">
-          不勾选任何队伍时，本赛事对<strong>全部启用队伍</strong>可见；
-          一旦勾选，则只有名单内的队伍能看到本赛事。
+          默认<strong>所有队伍都看不到</strong>本赛事，勾选后名单内的队伍才能看到。
         </p>
       </div>
 
@@ -80,11 +79,22 @@
         <span class="text-sub">已选 {{ visibleForm.teamIds.length }} / {{ teams.length }}</span>
       </div>
 
-      <el-checkbox-group v-model="visibleForm.teamIds" class="visible-list">
-        <el-checkbox v-for="t in filteredTeams" :key="t.id" :value="t.id" class="visible-item">
-          {{ t.name }}<span class="text-sub">（{{ t.leader_name }} {{ t.leader_id }}）</span>
-        </el-checkbox>
-      </el-checkbox-group>
+      <div class="visible-scroll">
+        <el-checkbox-group v-model="visibleForm.teamIds" class="visible-list">
+          <label
+            v-for="t in filteredTeams"
+            :key="t.id"
+            class="visible-item"
+            :class="{ 'is-picked': visibleForm.teamIds.includes(t.id) }"
+          >
+            <el-checkbox :value="t.id" class="visible-check">
+              <span class="team-name">{{ t.name }}</span>
+              <span class="team-meta">{{ t.leader_name }} · {{ t.leader_id }}</span>
+            </el-checkbox>
+          </label>
+        </el-checkbox-group>
+        <el-empty v-if="!filteredTeams.length" description="没有匹配的队伍" :image-size="70" />
+      </div>
 
       <template #footer>
         <el-button @click="visibleDialog = false">取消</el-button>
@@ -245,7 +255,7 @@ onMounted(load);
 
 <style scoped>
 .visible-tip {
-  margin-bottom: 12px;
+  margin-bottom: 14px;
   line-height: 1.7;
 }
 .visible-tip p {
@@ -255,19 +265,62 @@ onMounted(load);
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
+
+/* 列表在固定高度内滚动，队伍多时弹窗尺寸保持不变 */
+.visible-scroll {
+  max-height: 340px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
 .visible-list {
   display: flex;
   flex-direction: column;
-  max-height: 320px;
-  overflow-y: auto;
-  border: 1px solid var(--c-border);
-  border-radius: var(--r-input);
-  padding: 8px 12px;
+  gap: 10px;
 }
+
+/* 每支队伍一个圆角矩形卡片，彼此留出间距 */
 .visible-item {
-  height: 30px;
+  display: block;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-card);
+  background: var(--c-white);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.visible-item:hover {
+  border-color: var(--c-primary-2);
+}
+.visible-item.is-picked {
+  border-color: var(--c-primary);
+  background: var(--c-selected);
+}
+
+.visible-check {
+  width: 100%;
+  height: auto;
   margin-right: 0;
+  align-items: center;
+}
+.visible-check :deep(.el-checkbox__label) {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.5;
+  white-space: normal;
+}
+
+.team-name {
+  font-size: var(--f-sm);
+  font-weight: 600;
+  color: var(--c-text);
+}
+.team-meta {
+  font-size: var(--f-xs);
+  color: var(--c-text-sub);
 }
 </style>

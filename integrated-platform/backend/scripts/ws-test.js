@@ -65,6 +65,29 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   const online = await api('GET', '/chat/rooms/' + roomId + '/online');
   check('B 断开后在线列表更新', online.data.every(m => m.key !== 'B'), online.data);
 
+  // ---- 断线重连：新连接先建立、旧连接后关闭，成员应保持在线 ----
+  // 旧实现在旧连接 close 时无条件 setOffline，会把新连接刚写入的在线状态删掉，
+  // 表现为「已连接却显示无在线人员」。
+  console.log('');
+  console.log('=== 断线重连后的在线状态 ===');
+  const wsC1 = new WebSocket('ws://localhost:3001/platform-ws?roomId=' + roomId + '&memberKey=C&name=王五');
+  await new Promise((res, rej) => { wsC1.on('open', res); wsC1.on('error', rej); });
+  await sleep(500);
+
+  const wsC2 = new WebSocket('ws://localhost:3001/platform-ws?roomId=' + roomId + '&memberKey=C&name=王五');
+  await new Promise((res, rej) => { wsC2.on('open', res); wsC2.on('error', rej); });
+  await sleep(300);
+  wsC1.close(); // 旧连接在此时才关闭
+  await sleep(800);
+
+  const online2 = await api('GET', '/chat/rooms/' + roomId + '/online');
+  check('重连后成员仍在线', online2.data.some(m => m.key === 'C'), online2.data.map(m => m.key));
+
+  wsC2.close();
+  await sleep(800);
+  const online3 = await api('GET', '/chat/rooms/' + roomId + '/online');
+  check('最后一个连接关闭后才离线', !online3.data.some(m => m.key === 'C'), online3.data.map(m => m.key));
+
   wsA.close();
   console.log('');
   console.log('RESULT: ' + pass + ' passed, ' + fail + ' failed');
