@@ -531,6 +531,8 @@ function connect() {
 
   ws.onopen = () => {
     connected.value = true;
+    // 补发连接建立前排队等待的消息
+    flushPendingSends();
     // 连上后主动拉一次在线成员，不必等下一次推送
     loadOnline();
     heartbeatTimer = setInterval(() => {
@@ -674,13 +676,41 @@ function sendPhrase(content) {
   sendText();
 }
 
+/**
+ * 待发送队列。
+ *
+ * 之前连接未就绪时只弹一句"连接已断开，正在重连"就把消息丢掉了，
+ * 但调用方（如"题目已发送到聊天室"）已经提示成功——于是出现
+ * "提示已发送，实际没发出去"。现在先入队，连上后自动补发。
+ */
+const pendingSends = [];
+
 function sendVia(payload) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    ElMessage.warning('连接已断开，正在重连');
+    // 正在建立连接：入队等待，不丢消息
+    if (ws && ws.readyState === WebSocket.CONNECTING) {
+      pendingSends.push(payload);
+      return;
+    }
+    // 完全断开：先入队再重连，连上后补发
+    pendingSends.push(payload);
+    ElMessage.warning('连接已断开，正在重连，消息将在连接恢复后发送');
     connect();
     return;
   }
   ws.send(JSON.stringify(payload));
+}
+
+/** 连接建立后补发排队中的消息 */
+function flushPendingSends() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  while (pendingSends.length) {
+    const payload = pendingSends.shift();
+    try { ws.send(JSON.stringify(payload)); } catch (e) {
+      pendingSends.unshift(payload);
+      break;
+    }
+  }
 }
 
 function submitAnswer(questionId, answer) {
@@ -766,11 +796,29 @@ async function jumpToHit() {
 
   await nextTick();
   const el = rowRefs.get(id);
-  if (el && msgBox.value) {
-    // 在滚动容器内居中显示，便于确认上下文
-    const top = el.offsetTop - msgBox.value.clientHeight / 2 + el.clientHeight / 2;
-    msgBox.value.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
-  }
+  const box = msgBox.value;
+  if (!el || !box) return;
+
+  // 用 getBoundingClientRect 计算「相对滚动容器」的位置。
+  // 之前用 el.offsetTop：它相对最近的定位祖先计算，而 .chat-messages 没有
+  // position: relative，offsetTop 于是相对更外层的元素，导致滚动位置整体偏移——
+  // 命中的消息落在可视区之外，用户还得自己上滑才能看到。
+  const boxRect = box.getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+  const offsetInBox = elRect.top - boxRect.top + box.scrollTop;
+
+  // 定位到容器偏上位置（留出一点上下文），确保命中内容一定在可视区内
+  const target = Math.max(0, offsetInBox - Math.min(60, box.clientHeight / 4));
+  box.scrollTo({ top: target, behavior: 'smooth' });
+
+  // 平滑滚动期间元素可能仍在动，稍后再校正一次，确保结果精确可见
+  setTimeout(() => {
+    const b2 = box.getBoundingClientRect();
+    const e2 = el.getBoundingClientRect();
+    const off2 = e2.top - b2.top + box.scrollTop;
+    const want = Math.max(0, off2 - Math.min(60, box.clientHeight / 4));
+    if (Math.abs(box.scrollTop - want) > 8) box.scrollTo({ top: want, behavior: 'auto' });
+  }, 380);
 }
 
 /** 上一条 / 下一条 */
@@ -797,21 +845,51 @@ function scrollToBottom() {
 
 function onScroll() { /* 保留钩子，供后续加载历史消息 */ }
 
-/** 从题库检索页跳转过来时，自动把题目发到聊天室 (7.3) */
+/**
+ * 从题库检索页跳转过来时，自动把题目发到聊天室 (7.3)。
+ *
+ * 必须先等 WebSocket 真正连上再发：进入页面时 connect() 刚发出，
+ * 套接字还在 CONNECTING，此时发送会被丢弃（旧实现只弹提示不发送）。
+ */
 async function sendIncomingQuestion() {
   const qid = route.query.questionId;
   if (!qid) return;
+
+  let q;
   try {
     const { questionApi } = await import('@/api');
-    const q = await questionApi.detail(qid);
-    sendVia({
-      type: 'message',
-      messageType: 'question',
-      content: q.content,
-      extra: { questionId: q.id, content: q.content, options: q.options, answer: q.answer }
-    });
-    ElMessage.success('题目已发送到聊天室');
-  } catch (e) { /* 错误已提示 */ }
+    q = await questionApi.detail(qid);
+  } catch (e) {
+    return; // 错误已提示
+  }
+  if (!q) return;
+
+  const payload = {
+    type: 'message',
+    messageType: 'question',
+    content: q.content,
+    extra: { questionId: q.id, content: q.content, options: q.options, answer: q.answer }
+  };
+
+  // 等待连接就绪（最多 5 秒），就绪后立即发送
+  const ready = await waitForSocket(5000);
+  sendVia(payload);
+  if (ready) ElMessage.success('题目已发送到聊天室');
+  else ElMessage.info('连接较慢，题目将在连接恢复后自动发送');
+}
+
+/** 等待 WebSocket 进入 OPEN 状态；返回是否在超时前就绪 */
+function waitForSocket(timeoutMs) {
+  if (ws && ws.readyState === WebSocket.OPEN) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    const check = () => {
+      if (ws && ws.readyState === WebSocket.OPEN) return resolve(true);
+      if (Date.now() >= deadline) return resolve(false);
+      setTimeout(check, 100);
+    };
+    check();
+  });
 }
 
 watch(() => route.query.questionId, (v) => { if (v && room.value) sendIncomingQuestion(); });

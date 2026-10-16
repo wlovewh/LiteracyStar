@@ -33,7 +33,7 @@
             placeholder="请输入访问密钥"
             clearable
             show-password
-            @keyup.enter="handleLogin"
+            @keydown.enter.prevent="handleLogin"
           />
         </el-form-item>
         <div class="login-hint">

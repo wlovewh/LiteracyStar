@@ -98,4 +98,48 @@ async function studentLogin(studentId, password) {
   };
 }
 
-module.exports = { adminLogin, studentLogin, ADMIN_USERNAME, ADMIN_DEFAULT_PASSWORD };
+/**
+ * 按令牌载荷补齐当前登录者信息。
+ *
+ * /auth/me 之前直接回显令牌内容，缺少 teamName / canViewAllStages 等字段，
+ * 前端刷新后用它覆盖本地缓存会丢掉这些信息。这里按令牌里的身份重新查库补全，
+ * 与登录接口返回的结构保持一致。
+ */
+async function profileOf(payload) {
+  if (!payload) throw new AppError('登录状态无效，请重新登录', 401, 401);
+
+  if (payload.role === 'admin') {
+    return { role: 'admin', username: payload.username || ADMIN_USERNAME, name: payload.name || '系统管理员' };
+  }
+
+  const sid = payload.studentId;
+  if (!sid) throw new AppError('登录状态无效，请重新登录', 401, 401);
+
+  const team = await db.queryOne(
+    'SELECT id, name, leader_name, leader_id, member1_name, member1_id, member2_name, member2_id, status ' +
+      'FROM teams WHERE id = ? LIMIT 1',
+    [payload.teamId]
+  );
+  if (!team) throw new AppError('账号已失效，请重新登录', 401, 401);
+  if (Number(team.status) !== 1) throw new AppError('该队伍已被禁用，请联系管理员', 403, 403);
+
+  const role = payload.role === 'member' ? 'member' : 'leader';
+  const name =
+    role === 'leader'
+      ? team.leader_name
+      : team.member1_id === sid
+        ? team.member1_name
+        : team.member2_name;
+
+  return {
+    role,
+    studentId: sid,
+    teamId: team.id,
+    teamName: team.name,
+    name: name || payload.name || '',
+    isLeader: role === 'leader',
+    canViewAllStages: role === 'leader'
+  };
+}
+
+module.exports = { adminLogin, studentLogin, profileOf, ADMIN_USERNAME, ADMIN_DEFAULT_PASSWORD };

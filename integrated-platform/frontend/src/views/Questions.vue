@@ -8,8 +8,19 @@
       <el-button v-if="total" @click="exportCsv" :loading="exporting">导出 CSV</el-button>
     </div>
 
+    <!-- 管理员关闭检索功能时的明确提示 -->
+    <el-alert
+      v-if="!searchEnabled"
+      title="题库检索功能当前未开放"
+      description="管理员已在后台关闭题库检索，请联系管理员开启后再使用。"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="closed-alert"
+    />
+
     <!-- 检索条件 -->
-    <div class="app-card filter-card">
+    <div v-show="searchEnabled" class="app-card filter-card">
       <el-form inline>
         <el-form-item label="题干关键词">
           <el-input
@@ -83,10 +94,11 @@
           </div>
         </div>
       </div>
-      <el-empty v-else-if="!loading" description="没有找到匹配的题目" />
+      <el-empty v-else-if="!loading && searchEnabled" description="没有找到匹配的题目" />
     </div>
 
     <AppPager
+      v-if="searchEnabled"
       v-model:page="query.page"
       v-model:page-size="query.pageSize"
       :total="total"
@@ -123,7 +135,20 @@ async function loadFacets() {
   }
 }
 
+/** 检索开关：管理员可在后台关闭题库检索，关闭时给出明确提示而非报错 */
+const searchEnabled = ref(true);
+
+async function loadSettings() {
+  try {
+    const s = await questionApi.getSettings();
+    searchEnabled.value = !(s && s.searchEnabled === false);
+  } catch (e) {
+    /* 读取失败时按开放处理，避免误挡用户 */
+  }
+}
+
 async function load() {
+  if (!searchEnabled.value) return;
   loading.value = true;
   try {
     const data = await questionApi.search({
@@ -138,7 +163,8 @@ async function load() {
     list.value = data.list;
     total.value = data.total;
   } catch (e) {
-    /* 错误已提示 */
+    // 403 表示管理员关闭了检索功能：拦截器已弹提示，这里同步切换到「未开放」状态
+    if (e && e.response && e.response.status === 403) searchEnabled.value = false;
   } finally {
     loading.value = false;
   }
@@ -205,13 +231,15 @@ function sendToChat(q) {
   router.push({ path: '/chat', query: { questionId: q.id } });
 }
 
-onMounted(() => {
+onMounted(async () => {
+  await loadSettings();
   loadFacets();
   load();
 });
 </script>
 
 <style scoped>
+.closed-alert { margin-bottom: var(--sp-mid); }
 .question-list { display: flex; flex-direction: column; gap: var(--sp-mid); }
 .question-item { padding: var(--sp-mid) var(--sp-card); }
 .q-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }

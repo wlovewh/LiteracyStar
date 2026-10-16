@@ -67,14 +67,24 @@ async function ensureSessionValid() {
   const token = getToken();
   if (!token) { sessionChecked = true; return; }
 
+  // 修复旧版本遗留的损坏缓存：user 被错误地存成了 { user: {...} }
+  const cached = getUser();
+  if (cached && cached.user && !cached.role) {
+    setAuth(token, cached.user);
+  }
+
   sessionPromise = (async () => {
     try {
       const { authApi } = await import('@/api');
-      const me = await authApi.me();
-      // 以服务端返回的身份为准，覆盖可能过期的本地缓存
-      if (me) setAuth(token, me);
+      const res = await authApi.me();
+      // /auth/me 返回 { user: {...} }，必须取内层的 user 再落盘。
+      // 之前直接存了整个响应对象，导致本地 user 变成 { user: {...} }，
+      // user.role / user.teamId 全部丢失——刷新后表现为"未登录"。
+      const me = res && res.user ? res.user : res;
+      if (me && me.role) setAuth(token, me);
     } catch (e) {
-      // 401/403 表示会话已失效：清掉本地缓存，回到登录页
+      // 只有服务端明确判定会话失效（401/403）才登出；
+      // 网络抖动或服务重启不应把用户踢下线。
       const status = e && e.response && e.response.status;
       if (status === 401 || status === 403) clearAuth();
     } finally {

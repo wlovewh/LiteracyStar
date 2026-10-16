@@ -100,6 +100,10 @@ async function startExam(stageId, user) {
     serverTime: new Date().toISOString(),
     // 服务端权威时限（秒）：扣除已经用掉的时间，刷新页面不会重置倒计时
     availableTime: relay.active ? relay.availableTime : timeState.remaining,
+    // 计时锚点：前端用「本次考试开始时刻」而非「页面渲染时刻」推算截止时间，
+    // 否则页面加载/跳转耗时会让人误以为倒计时凭空少了几十秒。
+    startedAt: timeState.startedAt || null,
+    timeLimit: relay.active ? relay.availableTime : limitTotal(cfg, relay),
     expired: timeState.expired,
     perQuestionTime: cfg.timeConfig.perQuestionTime,
     allowSkip: cfg.specialConfig.allowSkip,
@@ -108,9 +112,14 @@ async function startExam(stageId, user) {
   };
 }
 
+/** 本次答题的名义总时长（秒），用于前端展示与推算截止时刻 */
+function limitTotal(cfg, relay) {
+  return relay && relay.active ? relay.availableTime : cfg.timeConfig.totalTime;
+}
+
 /**
  * 计算本次答题的剩余秒数（服务端权威时限）。
- * 以 stage_attempts.started_at 为起点，避免前端刷新页面重置倒计时。
+ * 以 stage_attempts.started_at 为起点，避免前端页面刷新重置倒计时。
  */
 async function remainingSeconds(stageId, user, limitSeconds) {
   const row = await db.queryOne(

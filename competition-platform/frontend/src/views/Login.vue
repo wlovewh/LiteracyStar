@@ -10,12 +10,12 @@
 
       <el-tabs v-model="activeTab" class="login-tabs">
         <el-tab-pane label="学生登录" name="student">
-          <el-form ref="studentFormRef" :model="studentForm" :rules="studentRules" label-position="top" @submit.prevent="handleStudentLogin" @keyup.enter="handleStudentLogin">
+          <el-form ref="studentFormRef" :model="studentForm" :rules="studentRules" label-position="top" @submit.prevent="handleStudentLogin">
             <el-form-item label="学号" prop="studentId">
-              <el-input v-model="studentForm.studentId" placeholder="请输入学号" size="large" clearable @keyup.enter="handleStudentLogin" />
+              <el-input v-model="studentForm.studentId" placeholder="请输入学号" size="large" clearable />
             </el-form-item>
             <el-form-item label="密码" prop="password">
-              <el-input v-model="studentForm.password" type="password" placeholder="默认密码与学号相同" size="large" show-password @keyup.enter="handleStudentLogin" />
+              <el-input v-model="studentForm.password" type="password" placeholder="默认密码与学号相同" size="large" show-password />
             </el-form-item>
             <el-button type="primary" size="large" class="login-btn" :loading="loading" @click="handleStudentLogin">登录</el-button>
             <p class="login-hint">初始密码与学号相同，如忘记请联系管理员</p>
@@ -23,12 +23,12 @@
         </el-tab-pane>
 
         <el-tab-pane label="管理员登录" name="admin">
-          <el-form ref="adminFormRef" :model="adminForm" :rules="adminRules" label-position="top" @submit.prevent="handleAdminLogin" @keyup.enter="handleAdminLogin">
+          <el-form ref="adminFormRef" :model="adminForm" :rules="adminRules" label-position="top" @submit.prevent="handleAdminLogin">
             <el-form-item label="账号" prop="username">
-              <el-input v-model="adminForm.username" placeholder="请输入管理员账号" size="large" clearable @keyup.enter="handleAdminLogin" />
+              <el-input v-model="adminForm.username" placeholder="请输入管理员账号" size="large" clearable />
             </el-form-item>
             <el-form-item label="密码" prop="password">
-              <el-input v-model="adminForm.password" type="password" placeholder="请输入密码" size="large" show-password @keyup.enter="handleAdminLogin" />
+              <el-input v-model="adminForm.password" type="password" placeholder="请输入密码" size="large" show-password />
             </el-form-item>
             <el-button type="primary" size="large" class="login-btn" :loading="loading" @click="handleAdminLogin">登录</el-button>
           </el-form>
@@ -41,7 +41,7 @@
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue';
+import { ref, reactive, onMounted, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useUserStore } from '@/stores/user';
@@ -74,14 +74,40 @@ const adminRules = {
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }]
 };
 
-async function handleStudentLogin() {
-  // 防止回车/连点重复提交：请求进行中直接忽略
+/**
+ * 回车登录：在页面级统一监听，不依赖 el-form / el-input 的事件冒泡。
+ *
+ * 之前把 @keyup.enter 同时绑在 el-form 和 el-input 上：
+ *  - 一次回车会触发两次，靠 loading 兜底；
+ *  - Element Plus 的包装层在部分浏览器/设备上不冒泡 keyup，
+ *    于是"有的设备能用有的不能"。
+ * 现在只保留这一个原生监听，任何输入框内回车都能登录。
+ */
+function onGlobalEnter(e) {
+  if (e.key !== 'Enter' && e.keyCode !== 13) return;
+  if (e.isComposing || e.keyCode === 229) return; // 中文输入法选词中，不触发
   if (loading.value) return;
 
-  const valid = await studentFormRef.value.validate().catch(() => false);
-  if (!valid) return;
+  if (activeTab.value === 'student') handleStudentLogin();
+  else handleAdminLogin();
+}
 
+onMounted(() => window.addEventListener('keydown', onGlobalEnter));
+onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalEnter));
+
+async function handleStudentLogin() {
+  // 防重复提交：必须在 await 之前置位。
+  // 之前的写法先 await validate() 再置 loading，两次快速回车会同时通过判断，
+  // 于是并发发起两个登录请求，表现为"有时候能用有时候不能用"。
+  if (loading.value) return;
   loading.value = true;
+
+  const valid = await studentFormRef.value.validate().catch(() => false);
+  if (!valid) {
+    loading.value = false;
+    return;
+  }
+
   try {
     const user = await userStore.studentLogin(studentForm.studentId, studentForm.password);
     ElMessage.success('登录成功，欢迎 ' + (user.name || user.studentId));
@@ -94,13 +120,16 @@ async function handleStudentLogin() {
 }
 
 async function handleAdminLogin() {
-  // 防止回车/连点重复提交：请求进行中直接忽略
+  // 防重复提交：同 handleStudentLogin，先置位再校验
   if (loading.value) return;
+  loading.value = true;
 
   const valid = await adminFormRef.value.validate().catch(() => false);
-  if (!valid) return;
+  if (!valid) {
+    loading.value = false;
+    return;
+  }
 
-  loading.value = true;
   try {
     await userStore.adminLogin(adminForm.username, adminForm.password);
     ElMessage.success('登录成功');

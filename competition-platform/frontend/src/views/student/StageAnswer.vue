@@ -12,18 +12,20 @@
         </div>
 
         <div class="topbar-center">
-          <div class="timer" :class="{ 'timer-urgent': remaining <= 60 }">
-            <el-icon :size="18"><Clock /></el-icon>
-            <span>总时长 {{ formatDuration(remaining) }}</span>
-          </div>
-          <!-- 抢答/限时题：每题独立倒计时，由环节配置 perQuestionTime 决定 -->
-          <div
-            v-if="perQuestionLimit > 0"
-            class="timer timer-per-question"
-            :class="{ 'timer-urgent': questionRemaining <= 10 }"
-          >
-            <el-icon :size="18"><AlarmClock /></el-icon>
-            <span>本题 {{ formatDuration(questionRemaining) }}</span>
+          <div class="timer-row">
+            <div class="timer" :class="{ 'timer-urgent': remaining <= 60 }">
+              <el-icon :size="18"><Clock /></el-icon>
+              <span>总时长 {{ formatDuration(remaining) }}</span>
+            </div>
+            <!-- 抢答/限时题：每题独立倒计时，由环节配置 perQuestionTime 决定 -->
+            <div
+              v-if="perQuestionLimit > 0"
+              class="timer timer-per-question"
+              :class="{ 'timer-urgent': questionRemaining <= 10 }"
+            >
+              <el-icon :size="18"><AlarmClock /></el-icon>
+              <span>本题 {{ formatDuration(questionRemaining) }}</span>
+            </div>
           </div>
           <div class="progress-text">{{ currentIndex + 1 }} / {{ questions.length }}</div>
         </div>
@@ -356,17 +358,44 @@ function go(delta) {
 
 /**
  * 点击「下一题」：先提交当前题目，再前进。
- * 未作答时直接前进（不提交）。
+ *
+ * 未作答时不再直接放行——交卷会把无记录的题判为未作答，
+ * 误触「下一题」会白丢分，因此先弹窗确认。
  */
 async function nextQuestion() {
   const q = currentQuestion.value;
   const ans = q ? answers.value[q.questionId] : '';
-  if (q && ans) await submitCurrent();
+
+  if (q && !ans) {
+    const isLast = currentIndex.value >= questions.value.length - 1;
+    try {
+      await ElMessageBox.confirm(
+        isLast
+          ? '本题尚未作答，交卷后该题将记为未作答（不得分），确定继续吗？'
+          : '本题尚未作答，确定跳到下一题吗？',
+        '尚未作答',
+        {
+          type: 'warning',
+          confirmButtonText: isLast ? '确定交卷' : '仍然跳过',
+          cancelButtonText: '继续作答'
+        }
+      );
+    } catch (e) {
+      return; // 用户选择留在当前题
+    }
+  } else if (q && ans) {
+    await submitCurrent();
+  }
+
   if (currentIndex.value < questions.value.length - 1) {
     feedback.value = null;
     currentIndex.value += 1;
     markQuestionStart();
+    return;
   }
+
+  // 已是最后一题：未作答时按用户确认结果直接交卷，否则走正常交卷流程
+  if (q && !ans) await doSubmit(false);
 }
 
 /** 跳转前先提交当前题目，保证作答不丢失 */
@@ -517,10 +546,22 @@ let deadlineAt = 0;
  *   - 用时统计偏小
  * 这里每秒用 Date.now() 重算剩余，标签页恢复时立即校正。
  */
-function startTimer(seconds) {
+function startTimer(seconds, anchor) {
   totalTimeLimit.value = seconds;
   remaining.value = seconds;
-  deadlineAt = Date.now() + seconds * 1000;
+
+  // 截止时刻以服务端记录的开考时间为锚点，而不是"页面渲染时刻 + 剩余秒数"。
+  // 否则页面加载、路由跳转、接口往返的耗时会让人以为倒计时凭空少了几十秒。
+  // anchor.startedAt 为服务端开考时刻，anchor.elapsed 为该时刻到现在已过的秒数。
+  let deadline;
+  if (anchor && anchor.startedAt && Number.isFinite(anchor.elapsed)) {
+    const startedMs = new Date(String(anchor.startedAt).replace(' ', 'T')).getTime();
+    if (Number.isFinite(startedMs)) {
+      deadline = startedMs + (Number(anchor.elapsed) + seconds) * 1000;
+    }
+  }
+  deadlineAt = deadline || (Date.now() + seconds * 1000);
+
   markQuestionStart();
   if (timer) clearInterval(timer);
 
@@ -610,7 +651,13 @@ async function load() {
     // 每题时限：抢答/限时环节由 timeConfig.perQuestionTime 指定，0 表示不限
     perQuestionLimit.value = Number(data.stage && data.stage.perQuestionTime) || 0;
 
-    startTimer(data.availableTime || 600);
+    // 用服务端返回的开考锚点校准截止时刻，消除页面加载耗时造成的显示误差
+    startTimer(data.availableTime || 600, {
+      startedAt: data.startedAt,
+      elapsed: data.timeLimit !== undefined && data.availableTime !== undefined
+        ? Number(data.timeLimit) - Number(data.availableTime)
+        : undefined
+    });
     markQuestionStart();
   } catch (e) {
     setTimeout(() => router.push('/stage/' + stageId + '/ready'), 900);
@@ -808,6 +855,14 @@ onBeforeUnmount(() => {
   gap: 2px;
 }
 
+/* 总时长与本题倒计时并排一行 */
+.timer-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 16px;
+}
+
 .timer {
   display: flex;
   align-items: center;
@@ -816,6 +871,11 @@ onBeforeUnmount(() => {
   font-weight: 600;
   color: var(--c-primary);
   font-variant-numeric: tabular-nums;
+}
+
+/* 本题倒计时用主题蓝的次级色区分，避免与总时长混淆 */
+.timer-per-question {
+  color: var(--c-primary-2);
 }
 
 .timer-urgent {

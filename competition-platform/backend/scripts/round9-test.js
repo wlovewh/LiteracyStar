@@ -285,6 +285,86 @@ async function api(method, path, { token, body } = {}) {
     check('/auth/me 返回当前身份', me.json.code === 0 && who.role === 'admin', who);
     const bad = await api('GET', '/auth/me', { token: 'invalid.token.here' });
     check('无效令牌返回 401', bad.status === 401, bad.status);
+
+    // 学生刷新页面靠 /auth/me 恢复身份，字段必须与登录接口一致，
+    // 否则前端覆盖缓存后会丢掉 teamName 等字段（表现为"变成未登录"）。
+    const sl = await api('POST', '/auth/student/login', { body: { studentId: '2026001', password: '2026001' } });
+    const sloginUser = sl.json.data.user;
+    const sme = await api('GET', '/auth/me', { token: sl.json.data.token });
+    const sUser = sme.json.data.user;
+    check('/auth/me 学生身份含 role', sUser.role === 'leader' || sUser.role === 'member', sUser);
+    check('/auth/me 学生身份含 teamId', Number(sUser.teamId) > 0, sUser.teamId);
+    check('/auth/me 学生身份含 teamName（与登录一致）', !!sUser.teamName, sUser);
+    check('/auth/me 与登录返回的字段集一致',
+      Object.keys(sloginUser).every((k) => sUser[k] !== undefined),
+      { login: Object.keys(sloginUser), me: Object.keys(sUser) });
+  }
+
+  // ============ ③ 刷新页面不重置倒计时 ============
+  console.log('');
+  console.log('=== ③ 刷新页面不重置倒计时 ===');
+  {
+    const ev = await api('POST', '/events', { token: at, body: { name: 'R9刷新计时', description: 'auto', status: 1 } });
+    const eid = ev.json.data.id;
+    const mk = await api('POST', '/events/' + eid + '/stages', {
+      token: at,
+      body: { name: '刷新验证', config: { mode: 'individual', timeConfig: { totalTime: 600 }, questionConfig: { single: 2 } } }
+    });
+    const sid = mk.json.data.id;
+    await api('POST', '/stages/' + sid + '/status', { token: at, body: { status: 1 } });
+
+    const sl = await api('POST', '/auth/student/login', { body: { studentId: '2026001', password: '2026001' } });
+    const st = sl.json.data.token;
+    const sme = await api('GET', '/auth/me', { token: st });
+    await api('PUT', '/events/' + eid + '/teams', { token: at, body: { teamIds: [sme.json.data.user.teamId] } });
+
+    const r1 = await api('POST', '/stages/' + sid + '/start', { token: st });
+    check('开考返回 availableTime', Number(r1.json.data.availableTime) === 600, r1.json.data.availableTime);
+    check('开考返回 startedAt 锚点', !!r1.json.data.startedAt, r1.json.data.startedAt);
+    check('开考返回 timeLimit', Number(r1.json.data.timeLimit) === 600, r1.json.data.timeLimit);
+
+    await new Promise((r) => setTimeout(r, 3000));
+
+    const r2 = await api('POST', '/stages/' + sid + '/start', { token: st });
+    const delta = Number(r1.json.data.availableTime) - Number(r2.json.data.availableTime);
+    check('刷新后倒计时继续（减少约 3 秒）', delta >= 3 && delta <= 6, delta);
+    check('刷新不会重置为满额', Number(r2.json.data.availableTime) < 600, r2.json.data.availableTime);
+    check('刷新后 startedAt 不变', String(r1.json.data.startedAt) === String(r2.json.data.startedAt),
+      { first: r1.json.data.startedAt, second: r2.json.data.startedAt });
+
+    await purgeEvent(eid);
+    console.log('  （已清理测试赛事 ' + eid + '）');
+  }
+
+  // ============ ④ 交卷用时与真实经过时间一致 ============
+  console.log('');
+  console.log('=== ④ 交卷用时准确性 ===');
+  {
+    const ev = await api('POST', '/events', { token: at, body: { name: 'R9用时精度', description: 'auto', status: 1 } });
+    const eid = ev.json.data.id;
+    const mk = await api('POST', '/events/' + eid + '/stages', {
+      token: at,
+      body: { name: '用时验证', config: { mode: 'individual', timeConfig: { totalTime: 600 }, questionConfig: { single: 2 } } }
+    });
+    const sid = mk.json.data.id;
+    await api('POST', '/stages/' + sid + '/status', { token: at, body: { status: 1 } });
+
+    const sl = await api('POST', '/auth/student/login', { body: { studentId: '2026001', password: '2026001' } });
+    const st = sl.json.data.token;
+    const sme = await api('GET', '/auth/me', { token: st });
+    await api('PUT', '/events/' + eid + '/teams', { token: at, body: { teamIds: [sme.json.data.user.teamId] } });
+
+    const t0 = Date.now();
+    await api('POST', '/stages/' + sid + '/start', { token: st });
+    await new Promise((r) => setTimeout(r, 5000));
+    const sub = await api('POST', '/stages/' + sid + '/submit', { token: st, body: {} });
+    const wall = Math.round((Date.now() - t0) / 1000);
+    const recorded = Number(sub.json.data.totalTime);
+    check('交卷用时与真实经过时间一致（误差 <= 2 秒）', Math.abs(recorded - wall) <= 2,
+      { recorded, wall });
+
+    await purgeEvent(eid);
+    console.log('  （已清理测试赛事 ' + eid + '）');
   }
 
   console.log('');
