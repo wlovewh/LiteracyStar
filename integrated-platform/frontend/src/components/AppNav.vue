@@ -28,12 +28,13 @@
     <el-dialog v-model="showLogin" title="访问密钥登录" width="420px" append-to-body>
       <el-form @submit.prevent>
         <el-form-item label="访问密钥" label-width="80px">
+          <!-- 回车由页面级监听统一处理，见 onGlobalEnter：
+               el-input 内部包了一层 input，@keydown.enter 在部分浏览器下不冒泡 -->
           <el-input
             v-model="keyValue"
             placeholder="请输入访问密钥"
             clearable
             show-password
-            @keydown.enter.prevent="handleLogin"
           />
         </el-form-item>
         <div class="login-hint">
@@ -49,7 +50,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useAuthStore } from '@/stores/auth';
@@ -112,6 +113,23 @@ async function handleLogin() {
     loading.value = false;
   }
 }
+
+/**
+ * 回车登录。
+ *
+ * 只在登录弹窗打开时生效，且过滤中文输入法组合态，
+ * 避免影响页面上其他输入框的正常回车行为。
+ */
+function onGlobalEnter(e) {
+  if (!showLogin.value) return;
+  if (e.key !== 'Enter' && e.keyCode !== 13) return;
+  if (e.isComposing || e.keyCode === 229) return;
+  e.preventDefault();
+  handleLogin();
+}
+
+onMounted(() => window.addEventListener('keydown', onGlobalEnter));
+onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalEnter));
 
 function handleLogout() {
   auth.logout();

@@ -39,24 +39,24 @@ async function createCategory(payload = {}) {
   return db.queryOne('SELECT * FROM resource_categories WHERE id = ?', [res.insertId]);
 }
 
-/**
- * 更新资源分类。
- *
- * 分类名称创建后不可修改：分类名是学生端入口的稳定标识，
- * 改名会让已发布的导航与外部引用失效，因此这里只允许改排序与启用状态。
- * 前端已把名称输入框置灰，此处再做一次服务端兜底。
- */
+/** 更新资源分类（名称、排序、启用状态均可改） */
 async function updateCategory(id, payload = {}) {
   const row = await db.queryOne('SELECT * FROM resource_categories WHERE id = ?', [id]);
   if (!row) throw new AppError('分类不存在', 404, 404);
 
-  if (payload.name !== undefined && String(payload.name).trim() !== String(row.name)) {
-    throw new AppError('资源分类名称不允许修改', 403, 403);
+  const name = payload.name !== undefined ? String(payload.name).trim() : row.name;
+  if (!name) throw new AppError('分类名称不能为空');
+
+  // 同名分类不允许重复
+  if (name !== row.name) {
+    const dup = await db.queryOne('SELECT id FROM resource_categories WHERE name = ? AND id <> ? LIMIT 1', [name, id]);
+    if (dup) throw new AppError('已存在同名分类', 409, 409);
   }
 
   await db.execute(
-    'UPDATE resource_categories SET sort_order = ?, status = ? WHERE id = ?',
+    'UPDATE resource_categories SET name = ?, sort_order = ?, status = ? WHERE id = ?',
     [
+      name,
       payload.sortOrder !== undefined ? Number(payload.sortOrder) || 0 : row.sort_order,
       payload.status !== undefined ? (Number(payload.status) === 1 ? 1 : 0) : row.status,
       id
@@ -68,13 +68,20 @@ async function updateCategory(id, payload = {}) {
 /**
  * 删除资源分类。
  *
- * 按需求资源分类（大类）一律不允许删除，只能改排序与启用状态，
- * 避免误删导致其下网站被外键级联清空。
+ * 外键为 ON DELETE CASCADE，直接删会连带清空该分类下的全部网站，
+ * 因此这里要求先清空分类下的网站，避免误删造成数据丢失。
  */
 async function removeCategory(id) {
   const row = await db.queryOne('SELECT * FROM resource_categories WHERE id = ?', [id]);
   if (!row) throw new AppError('分类不存在', 404, 404);
-  throw new AppError('资源分类不允许删除，如需下线请将状态改为禁用', 403, 403);
+
+  const used = await db.queryOne('SELECT COUNT(*) AS c FROM resource_sites WHERE category_id = ?', [id]);
+  if (used && Number(used.c) > 0) {
+    throw new AppError('该分类下还有 ' + used.c + ' 个网站，请先移除或改到其他分类', 409, 409);
+  }
+
+  await db.execute('DELETE FROM resource_categories WHERE id = ?', [id]);
+  return { id: Number(id) };
 }
 
 /** 网站列表（支持按分类、关键词筛选） */
@@ -144,6 +151,87 @@ async function removeSite(id) {
   return { id: Number(id) };
 }
 
+/**
+ * 批量导入资源网站。
+ *
+ * 表头（中文）：所属分类 / 网站名称 / 网址 / 简介 / 图标 / 排序 / 状态
+ * 必填：所属分类、网站名称、网址。
+ *
+ * 分类按名称匹配（不区分大小写、忽略首尾空格）；若不存在则自动创建，
+ * 这样运营可以直接把整理好的 Excel 丢进来，无需先手工建分类。
+ *
+ * @param {Array<object>} rows 已按表头映射好的行对象
+ * @returns {Promise<{total:number, inserted:number, skipped:number, failed:number, createdCategories:string[], errors:Array}>}
+ */
+async function importSites(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const result = { total: list.length, inserted: 0, skipped: 0, failed: 0, createdCategories: [], errors: [] };
+
+  // 分类名 -> id（先加载现有分类，避免逐行查库）
+  const cats = await db.query('SELECT id, name FROM resource_categories');
+  const catMap = new Map(cats.map((c) => [String(c.name).trim().toLowerCase(), c.id]));
+
+  // 已存在的 (分类, 网址) 组合，用于跳过重复
+  const existing = await db.query('SELECT category_id, url FROM resource_sites');
+  const seen = new Set(existing.map((s) => Number(s.category_id) + '|' + String(s.url || '').trim().toLowerCase()));
+
+  for (let i = 0; i < list.length; i += 1) {
+    const raw = list[i] || {};
+    const line = i + 2; // 含表头，方便用户对照 Excel 行号
+
+    const catName = String(raw['所属分类'] ?? raw.categoryName ?? raw.category ?? '').trim();
+    const name = String(raw['网站名称'] ?? raw.name ?? '').trim();
+    const url = String(raw['网址'] ?? raw.url ?? '').trim();
+    const description = String(raw['简介'] ?? raw.description ?? '').trim();
+    const iconUrl = String(raw['图标'] ?? raw.iconUrl ?? raw.icon_url ?? '').trim();
+    const sortRaw = String(raw['排序'] ?? raw.sortOrder ?? '').trim();
+    const statusRaw = String(raw['状态'] ?? raw.status ?? '').trim();
+
+    if (!catName || !name || !url) {
+      result.failed += 1;
+      result.errors.push({ line, message: '所属分类、网站名称、网址为必填项' });
+      continue;
+    }
+
+    // 状态：开启/关闭（也兼容 1/0、启用/禁用）
+    const status = /^(关闭|禁用|0|false|no)$/i.test(statusRaw) ? 0 : 1;
+    const sortOrder = Number.isFinite(Number(sortRaw)) && sortRaw !== '' ? Number(sortRaw) : 0;
+
+    try {
+      // 分类不存在则自动创建
+      const key = catName.toLowerCase();
+      let categoryId = catMap.get(key);
+      if (!categoryId) {
+        const created = await createCategory({ name: catName, sortOrder: 0, status: 1 });
+        categoryId = created.id;
+        catMap.set(key, categoryId);
+        result.createdCategories.push(catName);
+      }
+
+      const dupKey = Number(categoryId) + '|' + url.toLowerCase();
+      if (seen.has(dupKey)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      await db.execute(
+        'INSERT INTO resource_sites (category_id, name, url, description, icon_url, sort_order, status) VALUES (?,?,?,?,?,?,?)',
+        [categoryId, name, url, description || null, iconUrl || null, sortOrder, status]
+      );
+      seen.add(dupKey);
+      result.inserted += 1;
+    } catch (e) {
+      result.failed += 1;
+      result.errors.push({ line, message: e.message });
+    }
+  }
+
+  return result;
+}
+
+/** 批量导入模板的表头 */
+const SITE_IMPORT_HEADERS = ['所属分类', '网站名称', '网址', '简介', '图标', '排序', '状态'];
+
 /** 记录访问次数（用于数据统计） */
 async function trackVisit(id) {
   await db.execute('UPDATE resource_sites SET visit_count = visit_count + 1 WHERE id = ?', [id]);
@@ -160,5 +248,6 @@ async function reorderCategories(ids = []) {
 
 module.exports = {
   listCategories, createCategory, updateCategory, removeCategory, reorderCategories,
+  importSites, SITE_IMPORT_HEADERS,
   listSites, createSite, updateSite, removeSite, trackVisit
 };

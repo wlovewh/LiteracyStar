@@ -38,6 +38,75 @@ exports.updateSite = asyncHandler(async (req, res) => ok(res, await service.upda
 exports.removeSite = asyncHandler(async (req, res) => ok(res, await service.removeSite(req.params.id), '删除成功'));
 exports.trackVisit = asyncHandler(async (req, res) => ok(res, await service.trackVisit(req.params.id)));
 
+/** 批量导入模板（表头 + 示例行） */
+exports.importTemplate = asyncHandler(async (req, res) =>
+  ok(res, {
+    headers: service.SITE_IMPORT_HEADERS,
+    sample: [
+      ['学术信息资源', '中国知网', 'https://www.cnki.net', '中文学术文献数据库', '', 1, '开启'],
+      ['学术信息资源', '万方数据', 'https://www.wanfangdata.com.cn', '期刊与学位论文', '', 2, '开启']
+    ]
+  })
+);
+
+/**
+ * 批量导入资源网站。
+ * 支持 multipart 文件（CSV / XLSX / XLS）或直接提交 rows 数组。
+ */
+exports.importSites = asyncHandler(async (req, res) => {
+  let rows = [];
+
+  if (req.file) {
+    rows = parseSheet(req.file.buffer, req.file.originalname || '');
+  } else if (req.body && Array.isArray(req.body.rows)) {
+    rows = req.body.rows;
+  } else {
+    throw new AppError('请上传 CSV/Excel 文件或提供 rows 数组');
+  }
+
+  return ok(res, await service.importSites(rows), '导入完成');
+});
+
+/** 下载导入模板（xlsx），与题库导入保持一致的体验 */
+exports.downloadTemplate = asyncHandler(async (req, res) => {
+  const XLSX = require('xlsx');
+  const tpl = {
+    headers: service.SITE_IMPORT_HEADERS,
+    sample: [
+      ['学术信息资源', '中国知网', 'https://www.cnki.net', '中文学术文献数据库', '', 1, '开启'],
+      ['学术信息资源', '万方数据', 'https://www.wanfangdata.com.cn', '期刊与学位论文', '', 2, '开启']
+    ]
+  };
+  const aoa = [tpl.headers, ...tpl.sample];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '资源导入模板');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="resource-import-template.xlsx"');
+  return res.send(buf);
+});
+
+/** CSV / XLSX -> 行对象（按表头名映射） */
+function parseSheet(buffer, filename) {
+  const XLSX = require('xlsx');
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  if (!sheet) return [];
+  const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false });
+  if (matrix.length < 2) return [];
+  const header = matrix[0].map((h) => String(h === undefined || h === null ? '' : h).trim());
+  return matrix.slice(1).map((cells) => {
+    const row = {};
+    header.forEach((h, i) => {
+      const v = cells[i];
+      row[h] = v === undefined || v === null ? '' : String(v).trim();
+    });
+    return row;
+  });
+}
+
 /**
  * 上传网站图标 (project.md 追加文档 8.1 资源管理)
  * 接收 multipart 字段 icon，存入 uploads/icons，返回可访问 URL。

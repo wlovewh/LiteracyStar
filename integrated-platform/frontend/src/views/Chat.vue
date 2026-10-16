@@ -235,14 +235,19 @@
           </div>
 
           <div class="chat-input-row">
-            <el-input
+            <!--
+              直接用原生 textarea 而不是 el-input：
+              el-input 内部再包一层，键盘事件在部分浏览器/输入法下不会按预期冒泡，
+              导致「回车不发送、只能换行」。原生元素行为完全确定。
+            -->
+            <textarea
+              ref="draftRef"
               v-model="draft"
-              type="textarea"
-              :rows="2"
-              resize="none"
+              class="chat-textarea"
+              rows="2"
               placeholder="输入消息，Enter 发送，Shift+Enter 换行，Ctrl+V 粘贴图片"
               @keydown="onDraftKeydown"
-            />
+            ></textarea>
             <el-button
               :icon="Picture"
               :loading="uploading"

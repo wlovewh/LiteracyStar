@@ -115,7 +115,7 @@
             <el-option
               v-for="s in allStages"
               :key="s.id"
-              :label="s.event_name + ' / ' + s.name"
+              :label="s.eventName + ' / ' + s.name"
               :value="s.id"
             />
           </el-select>

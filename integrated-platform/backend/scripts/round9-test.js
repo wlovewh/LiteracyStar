@@ -127,26 +127,45 @@ async function api(m, p, { token, body } = {}) {
 
   // ============ 第十二轮：资源分类保护 / 自定义房间码 ============
   console.log('');
-  console.log('=== ⑩ 资源分类保护 ===');
+  console.log('=== ⑩ 资源分类编辑与删除 ===');
   {
     const cats = await api('GET', '/resources/categories', { token: tk });
     const first = (cats.json.data || [])[0];
     check('存在资源分类', !!first, cats.json.data && cats.json.data.length);
 
+    // 建一个临时分类，专门验证改名 / 删除，避免动到真实数据
+    const tmpName = '临时分类' + Date.now().toString().slice(-6);
+    const made = await api('POST', '/resources/categories', { token: tk, body: { name: tmpName, sortOrder: 99, status: 1 } });
+    check('新建分类', made.json.code === 0, made.json.message);
+    const tmpId = made.json.data && made.json.data.id;
+
+    if (tmpId) {
+      const renamed = '改名后' + Date.now().toString().slice(-6);
+      const re = await api('PUT', '/resources/categories/' + tmpId, { token: tk, body: { name: renamed } });
+      check('分类可以改名', re.json.code === 0 && re.json.data.name === renamed, re.json);
+
+      const dup = await api('POST', '/resources/categories', { token: tk, body: { name: renamed } });
+      const dupId = dup.json.data && dup.json.data.id;
+      const dupTry = await api('PUT', '/resources/categories/' + dupId, { token: tk, body: { name: renamed + 'X' } });
+      check('改名后与自身不冲突', dupTry.json.code === 0, dupTry.json);
+      if (dupId) await api('DELETE', '/resources/categories/' + dupId, { token: tk });
+
+      // 空分类可以删除
+      const del = await api('DELETE', '/resources/categories/' + tmpId, { token: tk });
+      check('空分类可以删除', del.json.code === 0, del.json);
+      const gone = await api('GET', '/resources/categories', { token: tk });
+      check('删除后列表不再包含', !(gone.json.data || []).some((c) => c.id === tmpId), tmpId);
+    }
+
+    // 有网站的分类不允许直接删除（避免级联清空）
     if (first) {
-      const rename = await api('PUT', '/resources/categories/' + first.id, { token: tk, body: { name: '改名测试XYZ' } });
-      check('分类改名被拒绝', rename.json.code !== 0, rename.json);
-      check('改名返回 403', rename.status === 403, rename.status);
-
-      const keep = await api('PUT', '/resources/categories/' + first.id, {
-        token: tk,
-        body: { name: first.name, sortOrder: first.sort_order, status: first.status }
-      });
-      check('原名 + 改排序可正常保存', keep.json.code === 0, keep.json.message);
-
-      const del = await api('DELETE', '/resources/categories/' + first.id, { token: tk });
-      check('分类删除被拒绝', del.json.code !== 0, del.json);
-      check('删除返回 403', del.status === 403, del.status);
+      const hasSites = Number(first.site_count) > 0;
+      if (hasSites) {
+        const del = await api('DELETE', '/resources/categories/' + first.id, { token: tk });
+        check('有网站的分类不允许删除', del.json.code !== 0 && del.status === 409, { status: del.status, msg: del.json.message });
+      } else {
+        check('有网站的分类不允许删除（本环境该分类为空，跳过）', true);
+      }
     }
 
     // 分类整体重排（上移/下移按钮走这个接口）
@@ -193,6 +212,103 @@ async function api(m, p, { token, body } = {}) {
       check('不传 code 时随机重生成', rand.json.code === 0 && /^\d{6}$/.test(rand.json.data.inviteCode), rand.json);
       await api('POST', '/chat/rooms/' + room.id + '/invite', { token: tk, body: { code: original } });
     }
+  }
+
+  console.log('');
+  console.log('=== ⑫ 资源网站批量导入 ===');
+  {
+    const catName = '导入测试分类' + Date.now().toString().slice(-6);
+
+    // 通过 rows 数组导入：验证必填校验 + 分类自动创建 + 去重
+    const rows = [
+      { 所属分类: catName, 网站名称: '测试站A', 网址: 'https://a.example.com', 简介: '说明A', 图标: '', 排序: '1', 状态: '开启' },
+      { 所属分类: catName, 网站名称: '测试站B', 网址: 'https://b.example.com', 简介: '', 图标: 'https://cdn.example.com/i.png', 排序: '2', 状态: '关闭' },
+      // 重复网址：应被跳过
+      { 所属分类: catName, 网站名称: '测试站A重复', 网址: 'https://a.example.com', 简介: '', 图标: '', 排序: '3', 状态: '开启' },
+      // 缺必填：应失败
+      { 所属分类: catName, 网站名称: '', 网址: 'https://c.example.com', 简介: '', 图标: '', 排序: '', 状态: '' },
+      // 缺网址：应失败
+      { 所属分类: catName, 网站名称: '测试站D', 网址: '', 简介: '', 图标: '', 排序: '', 状态: '' }
+    ];
+
+    const im = await api('POST', '/resources/sites/import', { token: tk, body: { rows } });
+    check('批量导入接口可用', im.json.code === 0, im.json.message);
+    const r = im.json.data || {};
+    check('总行数 5', r.total === 5, r.total);
+    check('成功 2 条', r.inserted === 2, r.inserted);
+    check('重复跳过 1 条', r.skipped === 1, r.skipped);
+    check('失败 2 条', r.failed === 2, r.failed);
+    check('自动创建了分类', (r.createdCategories || []).includes(catName), r.createdCategories);
+    check('错误信息带行号', (r.errors || []).length === 2 && r.errors.every((e) => e.line >= 2), r.errors);
+
+    // 状态列：关闭 -> status 0
+    // all=1 时统计全部网站（含禁用），这里应为 2
+    const cats = await api('GET', '/resources/categories?all=1', { token: tk });
+    const cat = (cats.json.data || []).find((c) => c.name === catName);
+    check('分类已落库', !!cat, catName);
+    if (cat) {
+      check('分类下 2 个网站', Number(cat.site_count) === 2, cat.site_count);
+
+      const sites = await api('GET', '/resources/sites?categoryId=' + cat.id + '&all=1&pageSize=50', { token: tk });
+      const list = (sites.json.data && sites.json.data.list) || [];
+      const b = list.find((x) => x.name === '测试站B');
+      check('状态「关闭」写入为 0', b && Number(b.status) === 0, b && b.status);
+      check('图标链接已写入', b && b.icon_url === 'https://cdn.example.com/i.png', b && b.icon_url);
+      const a = list.find((x) => x.name === '测试站A');
+      check('排序值已写入', a && Number(a.sort_order) === 1, a && a.sort_order);
+
+      // 清理：先删网站再删分类
+      for (const x of list) await api('DELETE', '/resources/sites/' + x.id, { token: tk });
+      const del = await api('DELETE', '/resources/categories/' + cat.id, { token: tk });
+      check('清理测试分类', del.json.code === 0, del.json.message);
+    }
+
+    // 模板下载
+    const tpl = await fetch(BASE + '/resources/sites/import-template', { headers: { Authorization: 'Bearer ' + tk } });
+    check('模板下载返回 200', tpl.status === 200, tpl.status);
+    check('模板为 xlsx 类型', (tpl.headers.get('content-type') || '').includes('spreadsheetml'), tpl.headers.get('content-type'));
+    const buf = Buffer.from(await tpl.arrayBuffer());
+    check('模板文件非空', buf.length > 500, buf.length);
+  }
+
+  console.log('');
+  console.log('=== ⑬ 删除聊天室 ===');
+  {
+    // 建一个临时房间用于删除验证
+    // ensureRoom 需要真实队伍 ID（team_id 有外键约束），用现有房间的 team_id 造一个临时房间
+    const allRooms = await api('GET', '/chat/rooms', { token: tk });
+    const roomList = (allRooms.json.data && (allRooms.json.data.list || allRooms.json.data)) || [];
+    const someTeam = roomList.length && roomList[0].team_id ? roomList[0].team_id : 1;
+    const mk = await api('POST', '/chat/rooms', {
+      body: { teamId: someTeam, name: '删除测试房间' + Date.now().toString().slice(-5) }
+    });
+    check('创建临时聊天室', mk.json.code === 0, mk.json.message);
+    const rid = mk.json.data && (mk.json.data.id || (mk.json.data.room && mk.json.data.room.id));
+
+    if (rid) {
+      // 发一条消息，验证删除时一并清理
+      await api('POST', '/chat/rooms/' + rid + '/messages', {
+        body: { memberKey: 'tester', name: '测试', type: 'message', content: '待删除消息' }
+      });
+
+      const before = await api('GET', '/chat/rooms/' + rid, { token: tk });
+      check('房间存在', before.json.code === 0, before.json.message);
+
+      const del = await api('DELETE', '/chat/rooms/' + rid, { token: tk });
+      check('删除聊天室成功', del.json.code === 0, del.json.message);
+      check('返回已清理消息数', del.json.data && del.json.data.messages >= 1, del.json.data);
+
+      const after = await api('GET', '/chat/rooms/' + rid, { token: tk });
+      check('删除后房间不存在', after.json.code !== 0, after.json);
+
+      const list = await api('GET', '/chat/rooms', { token: tk });
+      const rooms = (list.json.data && (list.json.data.list || list.json.data)) || [];
+      check('列表中不再包含', !rooms.some((x) => Number(x.id) === Number(rid)), rid);
+    }
+
+    // 非管理员不能删除
+    const noAuth = await api('DELETE', '/chat/rooms/1', {});
+    check('未登录不能删除聊天室', noAuth.json.code !== 0, noAuth.json);
   }
 
   console.log('');

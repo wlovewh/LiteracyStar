@@ -12,6 +12,9 @@ router.put('/categories/:id', requireAdmin, ctrl.updateCategory);
 router.delete('/categories/:id', requireAdmin, ctrl.removeCategory);
 
 // 网站
+// 批量导入相关路由必须放在 '/sites/:id' 之前，避免被当成 id
+router.get('/sites/import-template', requireAdmin, ctrl.downloadTemplate);
+router.post('/sites/import', requireAdmin, upload.singleSheet, ctrl.importSites);
 router.get('/sites', optionalAuth, ctrl.listSites);
 router.post('/sites', requireAdmin, ctrl.createSite);
 router.put('/sites/:id', requireAdmin, ctrl.updateSite);

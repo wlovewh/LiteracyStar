@@ -65,6 +65,10 @@ exports.deleteMessage = asyncHandler(async (req, res) =>
 exports.clearRoom = asyncHandler(async (req, res) =>
   ok(res, await service.clearRoom(req.params.id), '聊天室已清空'));
 
+/** 删除聊天室（连同消息与在线状态） */
+exports.removeRoom = asyncHandler(async (req, res) =>
+  ok(res, await service.removeRoom(req.params.id), '聊天室已删除'));
+
 exports.online = asyncHandler(async (req, res) => ok(res, await service.getOnlineMembers(req.params.id)));
 
 exports.heartbeat = asyncHandler(async (req, res) => {

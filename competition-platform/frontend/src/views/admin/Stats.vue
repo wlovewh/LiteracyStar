@@ -3,7 +3,17 @@
     <div class="page-header">
       <h2 class="page-title">数据统计</h2>
       <div class="toolbar">
-        <el-select v-model="stageId" placeholder="选择环节" style="width: 260px" @change="load">
+        <!-- 先筛赛事，再筛环节 -->
+        <el-select v-model="eventId" placeholder="选择赛事" style="width: 260px" @change="onEventChange">
+          <el-option v-for="e in events" :key="e.id" :label="e.name" :value="e.id" />
+        </el-select>
+        <el-select
+          v-model="stageId"
+          placeholder="选择环节"
+          style="width: 260px"
+          :disabled="!eventId"
+          @change="load"
+        >
           <el-option v-for="s in stages" :key="s.id" :label="s.name" :value="s.id" />
         </el-select>
         <el-button :icon="Refresh" @click="load">刷新</el-button>
@@ -80,7 +90,9 @@ import { adminApi, eventApi } from '@/api';
 import { QUESTION_TYPE_LABEL, humanDuration } from '@/utils/format';
 
 const loading = ref(false);
+const eventId = ref(null);
 const stageId = ref(null);
+const events = ref([]);
 const stages = ref([]);
 
 const data = reactive({
@@ -242,20 +254,42 @@ async function load() {
   }
 }
 
-async function loadStages() {
+/** 载入赛事列表，并默认选中第一个赛事 */
+async function loadEvents() {
   try {
-    const events = await eventApi.list();
-    if (!events.length) return;
-    const list = await eventApi.stages(events[0].id);
-    stages.value = list;
-    if (list.length && !stageId.value) stageId.value = list[0].id;
+    const list = await eventApi.list();
+    events.value = list;
+    if (list.length && !eventId.value) {
+      eventId.value = list[0].id;
+      await loadStages();
+    }
   } catch (e) {
     /* 拦截器已提示 */
   }
 }
 
-onMounted(async () => {
+/** 载入当前赛事下的环节，并默认选中第一个 */
+async function loadStages() {
+  stages.value = [];
+  stageId.value = null;
+  if (!eventId.value) return;
+  try {
+    const list = await eventApi.stages(eventId.value);
+    stages.value = list;
+    if (list.length) stageId.value = list[0].id;
+  } catch (e) {
+    /* 拦截器已提示 */
+  }
+}
+
+/** 切换赛事：重置环节并重新加载统计 */
+async function onEventChange() {
   await loadStages();
+  await load();
+}
+
+onMounted(async () => {
+  await loadEvents();
   await load();
   window.addEventListener('resize', resizeAll);
 });

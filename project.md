@@ -2414,6 +2414,117 @@ CREATE TABLE stage_attempts (
 
 其中 competition round9 由 36 项增至 45 项（新增抢答题速度排名 5 项、无总时限环节 4 项），integrated round9 由 24 项增至 38 项（新增资源分类保护 8 项、自定义房间码 6 项）。
 
+## 14.11 第十三轮：赛事/环节筛选、资源批量导入、回车提交与聊天室删除（2026-10-17）
+
+本轮共 5 项，全部来自验收反馈。
+
+### 14.11.1 清空答题数据弹窗显示 undefined
+
+**现象**：队伍管理 → 清空选中答题 → 环节下拉显示 `undefined / 环节名`。
+
+**根因**：后端 `stageService.listAllOptions()` 返回的字段是驼峰 `eventName`，而 `Teams.vue` 的模板写的是 `s.event_name`，取不到值即为 `undefined`。
+
+**修复**：模板改为 `s.eventName`。已验证接口返回字段为 `id, name, status, eventId, eventName`，无缺失。
+
+### 14.11.2 数据统计新增赛事筛选
+
+**现象**：数据统计只能筛环节，且固定取第一个赛事，多赛事下无法查看其他赛事。
+
+**修复**：`Stats.vue` 改为两级联动——先选赛事再选环节。`loadEvents()` 载入赛事列表并默认选中第一个；`onEventChange()` 切换赛事时重置环节并重新加载统计；未选赛事时环节下拉禁用。
+
+### 14.11.3 资源管理：排序按钮失效 / 分类编辑删除 / 批量导入
+
+本轮针对综合平台管理后台的资源管理，做了三件事。
+
+**(1) 移除上一轮新增的上移/下移按钮与网站排序列**
+
+上一轮误将「排序按钮点不动」理解为「缺少排序按钮」，新增了分类上移/下移与网站减小/增大列。实际问题是**弹窗内的 `el-input-number` 加减按钮点不动**。本轮已移除这些多余按钮，恢复列表原样。
+
+**(2) 弹窗内排序控件改为显式 +/- 按钮**
+
+`el-input-number` 的加减按钮在部分环境下不响应（内部依赖 mousedown 与按钮区域命中）。改为 `-` / 数字输入框 / `+` 三件套，行为完全确定：
+
+```
+function bumpCatSort(delta) {
+  catForm.value.sortOrder = clampSort(clampSort(catForm.value.sortOrder) + delta);
+}
+```
+
+`clampSort` 收敛到 `[0, 999]`，并处理非数字输入。
+
+**(3) 恢复分类的编辑与删除**
+
+上一轮按需求把分类改名/删除一律拒绝，本轮恢复为正常可用，同时保留必要的数据安全约束：
+
+- **编辑**：名称、排序、启用状态均可改；改名时校验同名校验（409）。
+- **删除**：分类下若仍有网站，返回 409 并提示先移除；空分类可正常删除。这条约束是必要的——`resource_sites.category_id` 是 `ON DELETE CASCADE`，直接删除会连带清空该分类下全部网站。
+
+**(4) 新增资源网站批量导入**
+
+- 表头：`所属分类 | 网站名称 | 网址 | 简介 | 图标 | 排序 | 状态`
+- 必填：所属分类、网站名称、网址；缺任一项该行失败并回报**原始 Excel 行号**。
+- 分类按名称匹配（忽略大小写与首尾空格），不存在时**自动创建**。
+- 同一分类下网址重复的行自动跳过。
+- 状态列支持 `开启/关闭`（兼容 `1/0`、`启用/禁用`）。
+- 提供「下载模板」按钮，导出 xlsx 模板（表头 + 2 行示例）。
+
+接口：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/platform-api/resources/sites/import` | multipart 文件或 `rows` 数组 |
+| GET | `/platform-api/resources/sites/import-template` | 下载 xlsx 模板 |
+
+> 注意：这两条路由必须注册在 `/sites/:id` **之前**，否则 `import-template` 会被当成 id。
+
+### 14.11.4 删除聊天室
+
+**背景**：上一轮排查结论是「没有删除路由」，但需求本身是**要求实现**删除功能，本轮补上。
+
+**实现**：`chatService.removeRoom(roomId)`
+
+1. 先删 `chat_messages`（显式按序清理，不依赖外键级联，避免不同环境 DDL 不一致时留下孤儿消息）；
+2. 清 Redis 在线状态 Hash `chat:online:<roomId>`；
+3. 删 `chat_rooms` 本体；
+4. 通过 Pub/Sub 广播 `room_deleted`，通知仍在房间内的人。
+
+路由 `DELETE /platform-api/chat/rooms/:id`（`requireAdmin`）。前端管理后台聊天室列表新增「删除聊天室」按钮，二次确认提示会一并删除的消息条数与房间码。
+
+### 14.11.5 回车键统一支持
+
+**现象**：聊天室回车仍是换行、不发送；回车无法快速登录任一平台；部分查询按钮无法回车触发。
+
+**根因**：`@keydown.enter` / `@keyup.enter` 绑在 `el-input` 上不可靠——Element Plus 在原生 input 外再包一层，部分浏览器/输入法下事件不按预期冒泡；`.exact` 修饰符还要求「无其他修饰键」，中文输入法确认候选词的回车也会被算进去。
+
+**修复**：
+
+1. **聊天室输入框改为原生 `<textarea>`**，键盘行为完全确定；`onDraftKeydown` 显式判断并过滤输入法组合态（`isComposing` / `keyCode === 229`），Enter 发送、Shift/Ctrl/Alt+Enter 换行。
+2. **两个平台的登录改为页面级 `window` 监听**（`onGlobalEnter`）：赛事端登录页沿用既有实现；综合平台 `AppNav.vue` 的密钥登录弹窗由 `@keydown.enter.prevent` 改为仅在弹窗打开时生效的全局监听。
+3. **查询/搜索框**已逐一核对，均带 `@keyup.enter`：赛事端 Teams、CheatLogs、Questions；综合平台 QuestionManage、ResourceManage、Admin 密钥列表、Questions、Resources。
+
+### 14.11.6 本轮测试
+
+| 套件 | 用例数 | 结果 |
+| --- | --- | --- |
+| competition test-logic | 28 | 全通过 |
+| competition audit-spec | 68 | 全通过 |
+| competition smoke-test | 43 | 全通过 |
+| competition stage-test | 10 | 全通过 |
+| competition event-select | 12 | 全通过 |
+| competition event-switch | 11 | 全通过 |
+| competition round8 | 21 | 全通过 |
+| competition round9 | 45 | 全通过 |
+| integrated smoke-test | 32 | 全通过 |
+| integrated ws-test | 11 | 全通过 |
+| integrated admin-test | 15 | 全通过 |
+| integrated quote-test | 10 | 全通过 |
+| integrated round8 | 16 | 全通过 |
+| integrated round9 | **62** | 全通过 |
+
+integrated round9 由 38 项增至 62 项：资源分类编辑与删除 9 项、批量导入 16 项、删除聊天室 7 项。
+
+另用真实 xlsx 文件走 multipart 上传路径验证：3 行 → 成功 2、失败 1（缺网址，回报第 4 行），分类自动创建。
+
 ### 开发环境约定
 
 - Windows 本地使用 **PowerShell 7**（`pwsh`，已安装 7.6.7）执行命令；默认的 5.1 在解析含 `$`、反引号、嵌套引号的命令时兼容性较差。

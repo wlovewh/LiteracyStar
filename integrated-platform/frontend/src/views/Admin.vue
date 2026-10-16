@@ -140,10 +140,11 @@
               </template>
             </el-table-column>
             <el-table-column prop="message_count" label="消息数" width="90" />
-            <el-table-column label="操作" width="200">
+            <el-table-column label="操作" width="260">
               <template #default="{ row }">
                 <el-button link type="primary" size="small" @click="openRoomDialog(row)">配置</el-button>
                 <el-button link type="danger" size="small" @click="clearRoom(row)">清空消息</el-button>
+                <el-button link type="danger" size="small" @click="removeRoom(row)">删除聊天室</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -554,6 +555,27 @@ async function clearRoom(row) {
     await chatApi.clearRoom(row.id);
     ElMessage.success('已清空');
     loadRooms();
+  } catch (e) { /* 错误已提示 */ }
+}
+
+/**
+ * 删除聊天室（连同其消息与在线状态）。
+ * 需二次确认：房间号与邀请码会一并失效，成员将无法再进入。
+ */
+async function removeRoom(row) {
+  try {
+    await ElMessageBox.confirm(
+      '确定删除聊天室「' + row.name + '」吗？该聊天室的 ' + (row.message_count || 0) +
+      ' 条消息、房间码与在线状态将一并删除，此操作不可恢复。',
+      '删除聊天室',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
+    );
+  } catch (e) { return; }
+  try {
+    const r = await chatApi.removeRoom(row.id);
+    ElMessage.success('已删除聊天室「' + (r.name || row.name) + '」，清理消息 ' + r.messages + ' 条');
+    loadRooms();
+    loadDashboard();
   } catch (e) { /* 错误已提示 */ }
 }
 

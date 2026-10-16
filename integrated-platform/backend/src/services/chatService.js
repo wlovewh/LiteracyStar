@@ -290,6 +290,36 @@ async function clearRoom(roomId) {
   return { roomId: Number(roomId), deleted: res.affectedRows || 0 };
 }
 
+/**
+ * 删除整个聊天室（连同其消息与在线状态）。
+ *
+ * 聊天室表被 chat_messages 以 room_id 引用，这里显式按顺序清理，
+ * 不依赖外键级联，避免不同环境 DDL 不一致时留下孤儿消息。
+ */
+async function removeRoom(roomId) {
+  const room = await getRoomById(roomId);
+
+  const msgs = await db.execute('DELETE FROM chat_messages WHERE room_id = ?', [roomId]);
+
+  // 在线状态存放在 Redis Hash，随房间一起清掉
+  try {
+    await redis.del(onlineKey(roomId));
+  } catch (_) {
+    /* Redis 不可用时忽略 */
+  }
+
+  await db.execute('DELETE FROM chat_rooms WHERE id = ?', [roomId]);
+
+  // 通知仍在房间内的人：房间已解散
+  try {
+    await redis.publish('chat:room:' + roomId, JSON.stringify({ type: 'room_deleted' }));
+  } catch (_) {
+    /* 广播失败不影响删除结果 */
+  }
+
+  return { id: Number(roomId), name: room.name, messages: msgs.affectedRows || 0 };
+}
+
 /** 清理过期消息（保留天数 > 0 时生效） */
 async function purgeExpired() {
   const rooms = await db.query('SELECT id, retention_days FROM chat_rooms WHERE retention_days > 0');
@@ -398,7 +428,7 @@ async function removePhrase(id) {
 module.exports = {
   ensureRoom, refreshInviteCode, setInviteCode, assertCustomCode, findByInviteCode, getRoomById,
   recentMessages, saveMessage, submitAnswer, searchMessages,
-  deleteMessage, clearRoom, purgeExpired,
+  deleteMessage, clearRoom, removeRoom, purgeExpired,
   setOnline, setOffline, getOnlineMembers,
   listRooms, updateRoom, assertCapacity,
   listPhrases, createPhrase, updatePhrase, removePhrase,

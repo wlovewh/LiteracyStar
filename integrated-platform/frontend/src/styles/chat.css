@@ -231,6 +231,26 @@
 
 .chat-input-row { display: flex; gap: 10px; align-items: flex-end; }
 
+/* 消息输入框：用原生 textarea，回车发送行为确定 */
+.chat-textarea {
+  flex: 1;
+  min-height: 56px;
+  max-height: 120px;
+  padding: 8px 12px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-input);
+  font-family: inherit;
+  font-size: var(--f-sm);
+  line-height: 1.6;
+  color: var(--c-text);
+  background: var(--c-white);
+  resize: none;
+  outline: none;
+  box-sizing: border-box;
+}
+.chat-textarea:focus { border-color: var(--c-primary-2); }
+.chat-textarea::placeholder { color: var(--c-text-sub); }
+
 .quote-preview {
   display: flex;
   align-items: center;

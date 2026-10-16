@@ -32,7 +32,27 @@ export const resourceApi = {
     if (siteId) fd.append('siteId', siteId);
     return http.post('/resources/icons', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
   },
-  removeIcon: (filename) => http.delete('/resources/icons/' + filename)
+  removeIcon: (filename) => http.delete('/resources/icons/' + filename),
+
+  // 批量导入资源网站
+  importSites: (file) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return http.post('/resources/sites/import', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+  },
+  // 下载导入模板（xlsx 二进制）
+  downloadImportTemplate: async () => {
+    const res = await http.get('/resources/sites/import-template', { responseType: 'blob' });
+    const blob = res.data instanceof Blob ? res.data : new Blob([res.data]);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'resource-import-template.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
 };
 
 // ---------------- 题库检索 ----------------
@@ -85,6 +105,7 @@ export const chatApi = {
   online: (id) => http.get('/chat/rooms/' + id + '/online'),
   heartbeat: (id, data) => http.post('/chat/rooms/' + id + '/heartbeat', data),
   clearRoom: (id) => http.delete('/chat/rooms/' + id + '/messages'),
+  removeRoom: (id) => http.delete('/chat/rooms/' + id),
   deleteMessage: (messageId) => http.delete('/chat/messages/' + messageId),
 
   phrases: () => http.get('/chat/phrases'),

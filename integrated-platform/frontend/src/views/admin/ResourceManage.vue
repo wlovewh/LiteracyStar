@@ -6,11 +6,11 @@
       <div class="app-card cat-panel">
         <div class="panel-head">
           <span class="panel-title">资源分类</span>
-          <el-button size="small" type="primary" @click="openCatDialog()">新增</el-button>
+          <el-button type="primary" @click="openCatDialog()">新增</el-button>
         </div>
         <div class="cat-list">
           <div
-            v-for="(c, ci) in categories"
+            v-for="c in categories"
             :key="c.id"
             class="cat-item"
             :class="{ 'is-active': activeCat === c.id }"
@@ -19,22 +19,8 @@
             <span class="cat-name">{{ c.name }}</span>
             <span class="cat-count">{{ c.site_count }}</span>
             <span class="cat-ops" @click.stop>
-              <el-button
-                link
-                type="primary"
-                size="small"
-                :disabled="ci === 0"
-                :loading="sortingCat === c.id"
-                @click="moveCategory(ci, -1)"
-              >上移</el-button>
-              <el-button
-                link
-                type="primary"
-                size="small"
-                :disabled="ci === categories.length - 1"
-                :loading="sortingCat === c.id"
-                @click="moveCategory(ci, 1)"
-              >下移</el-button>
+              <el-button link type="primary" @click="openCatDialog(c)">编辑</el-button>
+              <el-button link type="danger" @click="removeCategory(c)">删除</el-button>
             </span>
           </div>
         </div>
@@ -51,13 +37,13 @@
             <el-input
               v-model="siteKeyword"
               placeholder="搜索网站"
-              size="small"
+             
               clearable
               style="width: 160px"
               @keyup.enter="loadSites"
             />
-            <el-button size="small" @click="loadSites">查询</el-button>
-            <el-button size="small" type="primary" @click="openSiteDialog()">新增网站</el-button>
+            <el-button @click="loadSites">查询</el-button>
+            <el-button type="primary" @click="openSiteDialog()">新增网站</el-button>
           </div>
         </div>
 
@@ -76,22 +62,16 @@
           <el-table-column prop="visit_count" label="访问" width="80" />
           <el-table-column label="状态" width="90">
             <template #default="{ row }">
-              <el-tag :type="row.status === 1 ? 'primary' : 'info'" effect="plain" size="small">
+              <el-tag :type="row.status === 1 ? 'primary' : 'info'" effect="plain">
                 {{ row.status === 1 ? '启用' : '禁用' }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="排序" width="130" align="center">
-            <template #default="{ row }">
-              <el-button link type="primary" size="small" :disabled="row.sort_order <= 0" @click="bumpSiteSort(row, -1)">减小</el-button>
-              <el-button link type="primary" size="small" @click="bumpSiteSort(row, 1)">增大</el-button>
-            </template>
-          </el-table-column>
           <el-table-column label="操作" width="180" fixed="right">
             <template #default="{ row }">
-              <el-button link type="primary" size="small" @click="openSiteDialog(row)">编辑</el-button>
-              <el-button link type="primary" size="small" @click="openIconDialog(row)">图标</el-button>
-              <el-button link type="danger" size="small" @click="removeSite(row)">删除</el-button>
+              <el-button link type="primary" @click="openSiteDialog(row)">编辑</el-button>
+              <el-button link type="primary" @click="openIconDialog(row)">图标</el-button>
+              <el-button link type="danger" @click="removeSite(row)">删除</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -107,19 +87,17 @@
     </div>
 
     <!-- 分类弹窗 -->
-    <el-dialog v-model="catDialog" :title="catForm.id ? '分类排序设置' : '新增分类'" width="440px">
+    <el-dialog v-model="catDialog" :title="catForm.id ? '编辑分类' : '新增分类'" width="440px">
       <el-form :model="catForm" label-width="90px">
         <el-form-item label="分类名称" required>
-          <!-- 已有分类的名称不可修改（分类名是稳定标识，改名会让学生端已收藏的入口失效） -->
-          <el-input
-            v-model="catForm.name"
-            :disabled="!!catForm.id"
-            placeholder="例如：学术信息资源"
-          />
-          <span v-if="catForm.id" class="field-hint">分类名称创建后不可修改</span>
+          <el-input v-model="catForm.name" placeholder="例如：学术信息资源" />
         </el-form-item>
         <el-form-item label="排序">
-          <el-input-number v-model="catForm.sortOrder" :min="0" :max="999" />
+          <div class="sort-input">
+            <el-button @click="bumpCatSort(-1)">-</el-button>
+            <el-input v-model.number="catForm.sortOrder" style="width: 110px" @change="normalizeCatSort" />
+            <el-button @click="bumpCatSort(1)">+</el-button>
+          </div>
         </el-form-item>
         <el-form-item label="状态">
           <el-switch v-model="catForm.status" :active-value="1" :inactive-value="0" active-text="启用" />
@@ -162,14 +140,19 @@
                 style="display: none"
                 @change="onFilePicked"
               />
-              <el-button size="small" :loading="uploading" @click="fileInput && fileInput.click()">上传图标</el-button>
-              <el-button v-if="siteForm.iconUrl" size="small" link type="danger" @click="siteForm.iconUrl = ''">移除</el-button>
+              <el-button :loading="uploading" @click="fileInput && fileInput.click()">上传图标</el-button>
+              <el-button v-if="siteForm.iconUrl" link type="danger" @click="siteForm.iconUrl = ''">移除</el-button>
             </div>
             <div class="text-sub">支持 PNG / JPG / GIF / WEBP / SVG / ICO，不超过 2MB；留空则自动使用站点 favicon</div>
           </div>
         </el-form-item>
         <el-form-item label="排序">
-          <el-input-number v-model="siteForm.sortOrder" :min="0" :max="999" />
+          <div class="sort-input">
+            <el-button @click="bumpSiteSort(-1)">-</el-button>
+            <el-input v-model.number="siteForm.sortOrder" style="width: 110px" @change="normalizeSiteSort" />
+            <el-button @click="bumpSiteSort(1)">+</el-button>
+          </div>
+          <span class="field-hint">数字越小越靠前</span>
         </el-form-item>
         <el-form-item label="状态">
           <el-switch v-model="siteForm.status" :active-value="1" :inactive-value="0" active-text="启用" />
@@ -201,6 +184,46 @@
         <el-button @click="iconDialog = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <!-- 批量导入弹窗 -->
+    <el-dialog v-model="importDialog" title="批量导入资源网站" width="640px">
+      <el-alert type="info" :closable="false" style="margin-bottom: 16px">
+        <template #title>
+          支持 CSV / Excel 文件。列顺序请参照模板：
+          所属分类、网站名称、网址、简介、图标、排序、状态。
+          其中<b>所属分类、网站名称、网址</b>为必填；分类不存在时会自动创建。
+        </template>
+      </el-alert>
+
+      <input
+        ref="importInput"
+        type="file"
+        accept=".csv,.xlsx,.xls"
+        style="display: none"
+        @change="onImportFile"
+      />
+      <el-button type="primary" @click="importInput && importInput.click()">选择文件</el-button>
+      <el-button @click="downloadTemplate">下载模板</el-button>
+      <span v-if="importFile" class="text-sub" style="margin-left: 12px">{{ importFile.name }}</span>
+
+      <div v-if="importResult" class="import-result">
+        <div>
+          共 {{ importResult.total }} 行：成功 <b>{{ importResult.inserted }}</b>，
+          跳过重复 {{ importResult.skipped }}，失败 {{ importResult.failed }}
+        </div>
+        <div v-if="importResult.createdCategories && importResult.createdCategories.length">
+          自动创建分类：{{ importResult.createdCategories.join('、') }}
+        </div>
+        <ul v-if="importResult.errors && importResult.errors.length">
+          <li v-for="e in importResult.errors" :key="e.line">第 {{ e.line }} 行：{{ e.message }}</li>
+        </ul>
+      </div>
+
+      <template #footer>
+        <el-button @click="closeImport">关闭</el-button>
+        <el-button type="primary" :loading="importing" :disabled="!importFile" @click="doImport">开始导入</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -226,8 +249,6 @@ const total = ref(0);
 
 const catDialog = ref(false);
 const catForm = ref({ id: null, name: '', sortOrder: 0, status: 1 });
-// 正在调整排序的分类 id（用于按钮 loading，避免重复点击）
-const sortingCat = ref(null);
 
 const siteDialog = ref(false);
 const siteForm = ref(emptySite());
@@ -236,6 +257,13 @@ const iconDialog = ref(false);
 const iconTarget = ref(null);
 const fileInput = ref(null);
 const iconInput = ref(null);
+
+// 批量导入
+const importDialog = ref(false);
+const importInput = ref(null);
+const importFile = ref(null);
+const importing = ref(false);
+const importResult = ref(null);
 
 const activeCatName = computed(() => {
   if (!activeCat.value) return '全部分类';
@@ -303,53 +331,70 @@ async function saveCategory() {
   }
 }
 
-/**
- * 分类上移 / 下移。
- *
- * 排序值按列表顺序重新分配（0,1,2...），保证连续且唯一，
- * 避免手工输入的数字出现重复或空洞导致排序不稳定。
- */
-async function moveCategory(index, delta) {
-  const next = index + delta;
-  if (next < 0 || next >= categories.value.length) return;
+/** 排序值加减（弹窗内的 +/- 按钮） */
+function clampSort(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(999, Math.max(0, Math.round(n)));
+}
+function bumpCatSort(delta) {
+  catForm.value.sortOrder = clampSort(clampSort(catForm.value.sortOrder) + delta);
+}
+function bumpSiteSort(delta) {
+  siteForm.value.sortOrder = clampSort(clampSort(siteForm.value.sortOrder) + delta);
+}
+function normalizeCatSort() { catForm.value.sortOrder = clampSort(catForm.value.sortOrder); }
+function normalizeSiteSort() { siteForm.value.sortOrder = clampSort(siteForm.value.sortOrder); }
 
-  const list = categories.value.slice();
-  const [moved] = list.splice(index, 1);
-  list.splice(next, 0, moved);
-
-  sortingCat.value = moved.id;
+/** 删除分类（需先清空该分类下的网站） */
+async function removeCategory(row) {
   try {
-    // 后端按传入的 id 顺序整体重排，避免逐个提交产生中间态
-    await resourceApi.reorderCategories(list.map((c) => c.id));
-    await loadCategories();
-    ElMessage.success('排序已更新');
+    await ElMessageBox.confirm(
+      '确定删除分类「' + row.name + '」吗？该分类下必须没有网站才能删除。',
+      '删除确认',
+      { type: 'warning' }
+    );
+  } catch (e) { return; }
+  try {
+    await resourceApi.removeCategory(row.id);
+    ElMessage.success('已删除');
+    if (activeCat.value === row.id) activeCat.value = null;
+    await Promise.all([loadCategories(), loadSites()]);
     emit('changed');
-  } catch (e) {
-    /* 错误已提示 */
-  } finally {
-    sortingCat.value = null;
-  }
+  } catch (e) { /* 错误已提示 */ }
 }
 
-/** 网站排序值 ±1（减小 / 增大按钮） */
-async function bumpSiteSort(row, delta) {
-  const next = Math.max(0, Number(row.sort_order || 0) + delta);
-  if (next === Number(row.sort_order || 0)) return;
+// ---------------- 批量导入 ----------------
+function onImportFile(ev) {
+  const f = ev.target.files && ev.target.files[0];
+  ev.target.value = '';
+  if (!f) return;
+  importFile.value = f;
+  importResult.value = null;
+}
+
+function closeImport() {
+  importDialog.value = false;
+  importFile.value = null;
+  importResult.value = null;
+}
+
+async function downloadTemplate() {
   try {
-    await resourceApi.updateSite(row.id, {
-      categoryId: row.category_id,
-      name: row.name,
-      url: row.url,
-      description: row.description,
-      iconUrl: row.icon_url,
-      sortOrder: next,
-      status: row.status
-    });
-    row.sort_order = next;
-    await loadSites();
-    ElMessage.success('排序值已更新为 ' + next);
-  } catch (e) {
-    /* 错误已提示 */
+    await resourceApi.downloadImportTemplate();
+  } catch (e) { /* 错误已提示 */ }
+}
+
+async function doImport() {
+  if (!importFile.value) return ElMessage.warning('请先选择文件');
+  importing.value = true;
+  try {
+    importResult.value = await resourceApi.importSites(importFile.value);
+    ElMessage.success('导入完成');
+    await Promise.all([loadCategories(), loadSites()]);
+    emit('changed');
+  } catch (e) { /* 错误已提示 */ } finally {
+    importing.value = false;
   }
 }
 
@@ -517,6 +562,41 @@ onMounted(() => {
 
 .icon-preview img { width: 100%; height: 100%; object-fit: contain; }
 .icon-actions { display: flex; gap: 8px; align-items: center; }
+
+/* 分类项右侧的编辑 / 删除操作 */
+.cat-ops {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  flex: 0 0 auto;
+}
+
+/* 排序值：显式 +/- 按钮 + 数字输入，比 el-input-number 更可靠 */
+.sort-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sort-input .el-button {
+  width: 36px;
+  padding: 0;
+}
+
+/* 导入结果 */
+.import-result {
+  margin-top: 16px;
+  padding: 12px 14px;
+  background: var(--c-bg);
+  border-radius: var(--r-input);
+  font-size: var(--f-sm);
+  line-height: 1.9;
+}
+.import-result ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--c-danger);
+}
 
 @media (max-width: 900px) {
   .mgmt-layout { grid-template-columns: 1fr; }

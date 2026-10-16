@@ -26,6 +26,8 @@ router.post('/rooms/:id/answer', ctrl.submitAnswer);
 router.get('/rooms/:id/online', ctrl.online);
 router.post('/rooms/:id/heartbeat', ctrl.heartbeat);
 router.delete('/rooms/:id/messages', requireAdmin, ctrl.clearRoom);
+// 删除整个聊天室（连同消息与在线状态），仅管理员
+router.delete('/rooms/:id', requireAdmin, ctrl.removeRoom);
 router.delete('/messages/:messageId', requireAdmin, ctrl.deleteMessage);
 
 module.exports = router;
