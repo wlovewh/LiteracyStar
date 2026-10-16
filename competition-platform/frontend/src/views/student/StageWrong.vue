@@ -47,15 +47,21 @@
               <span class="stat-value">{{ data.wrong.length }}</span>
               <span class="stat-label">错题数</span>
             </div>
+            <div v-if="skippedCount" class="brief-item">
+              <span class="stat-value">{{ skippedCount }}</span>
+              <span class="stat-label">未作答</span>
+            </div>
           </div>
 
-          <el-empty v-if="!data.wrong.length" description="恭喜，本环节没有错题" />
+          <el-empty v-if="!data.wrong.length" description="恭喜，本环节没有错题，也没有跳过的题目" />
 
           <div v-for="(w, i) in data.wrong" :key="w.questionId" class="app-card wrong-card">
             <div class="wrong-head">
               <el-tag size="small" effect="plain">{{ typeLabel(w.type) }}</el-tag>
               <span class="wrong-index">第 {{ i + 1 }} 题</span>
               <el-tag v-if="w.module" size="small" type="info" effect="plain">{{ w.module }}</el-tag>
+              <!-- 跳过的题目也要展示，并明确标出「未作答」以区别于答错 -->
+              <el-tag v-if="w.skipped" size="small" type="warning" effect="plain">未作答</el-tag>
               <span class="wrong-delta">{{ w.scoreDelta }} 分</span>
             </div>
 
@@ -105,6 +111,9 @@ const stageName = computed(() => data.value?.stage?.name || '错题回顾');
 function typeLabel(t) {
   return QUESTION_TYPE_LABEL[t] || '题目';
 }
+
+/** 跳过的题目数量（未作答，与答错区分展示） */
+const skippedCount = computed(() => (data.value?.wrong || []).filter((w) => w.skipped).length);
 
 function isCorrectOption(w, letter) {
   return String(w.correctAnswer || '').includes(letter);

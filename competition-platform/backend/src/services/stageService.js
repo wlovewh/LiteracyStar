@@ -12,6 +12,27 @@ async function listByEvent(eventId) {
   return rows.map(cfgMod.summarize);
 }
 
+/**
+ * 全部环节的简要选项（含所属赛事名）。
+ *
+ * 供后台"清空答题数据"等需要选择环节的下拉框使用：
+ * 不同赛事下可能有同名环节，因此带上赛事名以便区分。
+ */
+async function listAllOptions() {
+  const rows = await db.query(
+    'SELECT s.id, s.name, s.status, s.sort_order, e.id AS event_id, e.name AS event_name ' +
+    'FROM stages s JOIN events e ON e.id = s.event_id ' +
+    'ORDER BY e.id ASC, s.sort_order ASC, s.id ASC'
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    status: r.status,
+    eventId: r.event_id,
+    eventName: r.event_name
+  }));
+}
+
 async function getRow(id) {
   const row = await db.queryOne('SELECT * FROM stages WHERE id = ?', [id]);
   if (!row) throw new AppError('环节不存在', 404, 404);
@@ -140,4 +161,4 @@ async function reorder(eventId, orderedIds) {
   return listByEvent(eventId);
 }
 
-module.exports = { listByEvent, getRow, getById, create, update, copy, setStatus, remove, move, reorder };
+module.exports = { listByEvent, listAllOptions, getRow, getById, create, update, copy, setStatus, remove, move, reorder };

@@ -55,10 +55,11 @@
 
         <el-divider />
         <div class="invite-box">
-          <div class="text-sub">邀请码</div>
+          <div class="text-sub">房间码</div>
           <div class="invite-code">{{ room.invite_code }}</div>
-          <el-button size="small" link type="primary" @click="copyInvite">复制邀请码</el-button>
-          <el-button size="small" link type="primary" @click="refreshInvite">刷新</el-button>
+          <el-button size="small" link type="primary" @click="copyInvite">复制房间码</el-button>
+          <el-button size="small" link type="primary" @click="refreshInvite">随机重生成</el-button>
+          <el-button size="small" link type="primary" @click="openCodeDialog">自定义</el-button>
           <div class="text-sub" style="margin-top: 6px; line-height: 1.5">
             有效期至 {{ formatTime(room.invite_expires_at) }}
           </div>
@@ -138,9 +139,19 @@
               <div class="msg-question">
                 <div class="msg-question-title">{{ m.extra?.content || m.content }}</div>
                 <div class="msg-question-options">
-                  <div v-for="o in (m.extra?.options || [])" :key="o.letter">
+                  <div
+                    v-for="o in (m.extra?.options || [])"
+                    :key="o.letter"
+                    :class="{ 'is-correct-option': isCorrectOption(m, o.letter) }"
+                  >
                     {{ o.letter }}. {{ o.text }}
                   </div>
+                </div>
+                <!-- 直接给出正确答案，无需再翻题库 -->
+                <div v-if="m.extra?.answer" class="msg-question-answer">
+                  <span class="q-answer-label">正确答案</span>
+                  <span class="q-answer-value">{{ m.extra.answer }}</span>
+                  <span v-if="m.extra?.analysis" class="q-answer-analysis">{{ m.extra.analysis }}</span>
                 </div>
                 <div class="msg-actions" style="opacity: 1; margin-top: 10px">
                   <el-button
@@ -230,7 +241,7 @@
               :rows="2"
               resize="none"
               placeholder="输入消息，Enter 发送，Shift+Enter 换行，Ctrl+V 粘贴图片"
-              @keydown.enter.exact.prevent="sendText"
+              @keydown="onDraftKeydown"
             />
             <el-button
               :icon="Picture"
@@ -250,6 +261,27 @@
         </div>
       </section>
     </div>
+
+    <!-- 自定义房间码 -->
+    <el-dialog v-model="codeDialog" title="自定义房间码" width="420px">
+      <el-form label-width="80px">
+        <el-form-item label="房间码">
+          <el-input
+            v-model="codeDraft"
+            maxlength="6"
+            placeholder="请输入 6 位数字"
+            @keyup.enter="saveCustomCode"
+          />
+        </el-form-item>
+      </el-form>
+      <div class="text-sub" style="line-height: 1.7">
+        房间码为 6 位数字，需全平台唯一。设置后原房间码立即失效，有效期重新计算 24 小时。
+      </div>
+      <template #footer>
+        <el-button @click="codeDialog = false">取消</el-button>
+        <el-button type="primary" :loading="savingCode" @click="saveCustomCode">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -384,6 +416,13 @@ function rowClass(m) {
   return isMine(m) ? 'is-self' : 'is-other';
 }
 
+/** 判断某选项是否为题目卡片里的正确答案（用于高亮） */
+function isCorrectOption(m, letter) {
+  const ans = String((m.extra && m.extra.answer) || '');
+  if (!ans) return false;
+  return ans.toUpperCase().includes(String(letter).toUpperCase());
+}
+
 function myAnswerOf(questionId) {
   const mine = messages.value.filter(
     (m) => m.messageType === 'answer' && Number(m.extra?.questionId) === Number(questionId) && isMine(m)
@@ -476,8 +515,38 @@ async function refreshInvite() {
     const r = await chatApi.refreshInvite(room.value.id);
     room.value.invite_code = r.inviteCode;
     room.value.invite_expires_at = r.expiresAt;
-    ElMessage.success('邀请码已刷新');
+    ElMessage.success('房间码已重新生成');
   } catch (e) { /* 错误已提示 */ }
+}
+
+// ---------------- 自定义房间码 ----------------
+const codeDialog = ref(false);
+const codeDraft = ref('');
+const savingCode = ref(false);
+
+function openCodeDialog() {
+  codeDraft.value = room.value.invite_code || '';
+  codeDialog.value = true;
+}
+
+async function saveCustomCode() {
+  const code = codeDraft.value.trim();
+  if (!/^\d{6}$/.test(code)) return ElMessage.warning('房间码必须是 6 位数字');
+  savingCode.value = true;
+  try {
+    const r = await chatApi.refreshInvite(room.value.id, code);
+    room.value.invite_code = r.inviteCode;
+    room.value.invite_expires_at = r.expiresAt;
+    // 本地记录的邀请码同步更新，否则题库检索的访客身份会失效
+    inviteCode.value = r.inviteCode;
+    const saved = JSON.parse(localStorage.getItem('chat_session') || '{}');
+    saved.inviteCode = r.inviteCode;
+    localStorage.setItem('chat_session', JSON.stringify(saved));
+    ElMessage.success('房间码已更新为 ' + r.inviteCode);
+    codeDialog.value = false;
+  } catch (e) { /* 错误已提示 */ } finally {
+    savingCode.value = false;
+  }
 }
 
 function copyInvite() {
@@ -595,6 +664,26 @@ function disconnect() {
 }
 
 // ---------------- 发送 ----------------
+
+/**
+ * 输入框回车处理。
+ *
+ * 之前用 @keydown.enter.exact.prevent 绑定在 el-input 上：
+ *  - el-input 内部包了一层 textarea，某些浏览器下事件不会按预期冒泡；
+ *  - .exact 修饰符要求"没有其他修饰键"，中文输入法确认候选词时也会触发回车，
+ *    导致要么没反应、要么直接把拼音发出去。
+ * 这里改为显式判断，并过滤输入法组合态。
+ */
+function onDraftKeydown(e) {
+  if (e.key !== 'Enter') return;
+  // 中文输入法选词中的回车不算发送
+  if (e.isComposing || e.keyCode === 229) return;
+  // Shift+Enter / Ctrl+Enter / Alt+Enter 保留换行
+  if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+  e.preventDefault();
+  sendText();
+}
+
 function sendText() {
   const content = draft.value.trim();
   if (!content) return;
@@ -872,7 +961,7 @@ async function sendIncomingQuestion() {
     type: 'message',
     messageType: 'question',
     content: q.content,
-    extra: { questionId: q.id, content: q.content, options: q.options, answer: q.answer }
+    extra: { questionId: q.id, content: q.content, options: q.options, answer: q.answer, analysis: q.analysis || '' }
   };
 
   // 等待连接就绪（最多 5 秒），就绪后立即发送

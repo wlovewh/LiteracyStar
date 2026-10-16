@@ -10,7 +10,7 @@
         </div>
         <div class="cat-list">
           <div
-            v-for="c in categories"
+            v-for="(c, ci) in categories"
             :key="c.id"
             class="cat-item"
             :class="{ 'is-active': activeCat === c.id }"
@@ -18,6 +18,24 @@
           >
             <span class="cat-name">{{ c.name }}</span>
             <span class="cat-count">{{ c.site_count }}</span>
+            <span class="cat-ops" @click.stop>
+              <el-button
+                link
+                type="primary"
+                size="small"
+                :disabled="ci === 0"
+                :loading="sortingCat === c.id"
+                @click="moveCategory(ci, -1)"
+              >上移</el-button>
+              <el-button
+                link
+                type="primary"
+                size="small"
+                :disabled="ci === categories.length - 1"
+                :loading="sortingCat === c.id"
+                @click="moveCategory(ci, 1)"
+              >下移</el-button>
+            </span>
           </div>
         </div>
       </div>
@@ -63,6 +81,12 @@
               </el-tag>
             </template>
           </el-table-column>
+          <el-table-column label="排序" width="130" align="center">
+            <template #default="{ row }">
+              <el-button link type="primary" size="small" :disabled="row.sort_order <= 0" @click="bumpSiteSort(row, -1)">减小</el-button>
+              <el-button link type="primary" size="small" @click="bumpSiteSort(row, 1)">增大</el-button>
+            </template>
+          </el-table-column>
           <el-table-column label="操作" width="180" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" size="small" @click="openSiteDialog(row)">编辑</el-button>
@@ -83,10 +107,16 @@
     </div>
 
     <!-- 分类弹窗 -->
-    <el-dialog v-model="catDialog" :title="catForm.id ? '编辑分类' : '新增分类'" width="440px">
+    <el-dialog v-model="catDialog" :title="catForm.id ? '分类排序设置' : '新增分类'" width="440px">
       <el-form :model="catForm" label-width="90px">
         <el-form-item label="分类名称" required>
-          <el-input v-model="catForm.name" placeholder="例如：学术信息资源" />
+          <!-- 已有分类的名称不可修改（分类名是稳定标识，改名会让学生端已收藏的入口失效） -->
+          <el-input
+            v-model="catForm.name"
+            :disabled="!!catForm.id"
+            placeholder="例如：学术信息资源"
+          />
+          <span v-if="catForm.id" class="field-hint">分类名称创建后不可修改</span>
         </el-form-item>
         <el-form-item label="排序">
           <el-input-number v-model="catForm.sortOrder" :min="0" :max="999" />
@@ -196,6 +226,8 @@ const total = ref(0);
 
 const catDialog = ref(false);
 const catForm = ref({ id: null, name: '', sortOrder: 0, status: 1 });
+// 正在调整排序的分类 id（用于按钮 loading，避免重复点击）
+const sortingCat = ref(null);
 
 const siteDialog = ref(false);
 const siteForm = ref(emptySite());
@@ -268,6 +300,56 @@ async function saveCategory() {
     emit('changed');
   } catch (e) { /* 错误已提示 */ } finally {
     saving.value = false;
+  }
+}
+
+/**
+ * 分类上移 / 下移。
+ *
+ * 排序值按列表顺序重新分配（0,1,2...），保证连续且唯一，
+ * 避免手工输入的数字出现重复或空洞导致排序不稳定。
+ */
+async function moveCategory(index, delta) {
+  const next = index + delta;
+  if (next < 0 || next >= categories.value.length) return;
+
+  const list = categories.value.slice();
+  const [moved] = list.splice(index, 1);
+  list.splice(next, 0, moved);
+
+  sortingCat.value = moved.id;
+  try {
+    // 后端按传入的 id 顺序整体重排，避免逐个提交产生中间态
+    await resourceApi.reorderCategories(list.map((c) => c.id));
+    await loadCategories();
+    ElMessage.success('排序已更新');
+    emit('changed');
+  } catch (e) {
+    /* 错误已提示 */
+  } finally {
+    sortingCat.value = null;
+  }
+}
+
+/** 网站排序值 ±1（减小 / 增大按钮） */
+async function bumpSiteSort(row, delta) {
+  const next = Math.max(0, Number(row.sort_order || 0) + delta);
+  if (next === Number(row.sort_order || 0)) return;
+  try {
+    await resourceApi.updateSite(row.id, {
+      categoryId: row.category_id,
+      name: row.name,
+      url: row.url,
+      description: row.description,
+      iconUrl: row.icon_url,
+      sortOrder: next,
+      status: row.status
+    });
+    row.sort_order = next;
+    await loadSites();
+    ElMessage.success('排序值已更新为 ' + next);
+  } catch (e) {
+    /* 错误已提示 */
   }
 }
 

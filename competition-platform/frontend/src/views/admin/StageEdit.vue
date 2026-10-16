@@ -34,6 +34,16 @@
           <el-switch v-model="form.config.allowViewAnswer" />
           <span class="field-hint">开启后学生完成环节可查看错题及解析（project.md 9.1）</span>
         </el-form-item>
+        <el-form-item label="答题卡旁榜单">
+          <el-radio-group v-model="form.config.rankBoard">
+            <el-radio-button label="auto">跟随赛制</el-radio-button>
+            <el-radio-button label="merged">队伍总榜</el-radio-button>
+            <el-radio-button label="separate">个人榜</el-radio-button>
+          </el-radio-group>
+          <span class="field-hint">
+            答题过程中答题卡旁展示的榜单：队伍总榜为全队三人分数相加（一个队伍一行），个人榜为每位队员一行。
+          </span>
+        </el-form-item>
       </div>
 
       <!-- 题目配置 -->
@@ -291,7 +301,8 @@ const defaultConfig = () => ({
   moduleFilter: [],
   difficultyFilter: [],
   fixedQuestionIds: [],
-  allowViewAnswer: false
+  allowViewAnswer: false,
+  rankBoard: 'auto'
 });
 
 const form = reactive({ name: '', config: defaultConfig() });

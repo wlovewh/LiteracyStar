@@ -30,8 +30,18 @@ exports.byInvite = asyncHandler(async (req, res) => {
 
 exports.getRoom = asyncHandler(async (req, res) => ok(res, await service.getRoomById(req.params.id)));
 
-exports.refreshInvite = asyncHandler(async (req, res) =>
-  ok(res, await service.refreshInviteCode(req.params.id), '邀请码已生成'));
+/**
+ * 生成 / 自定义房间码。
+ * body.code 传入 6 位数字时使用自定义码，否则随机重新生成。
+ */
+exports.refreshInvite = asyncHandler(async (req, res) => {
+  const code = req.body && req.body.code;
+  const hasCustom = code !== undefined && code !== null && String(code).trim() !== '';
+  const data = hasCustom
+    ? await service.setInviteCode(req.params.id, code)
+    : await service.refreshInviteCode(req.params.id);
+  return ok(res, data, hasCustom ? '房间码已更新' : '邀请码已生成');
+});
 
 exports.messages = asyncHandler(async (req, res) =>
   ok(res, await service.recentMessages(req.params.id, req.query.limit)));

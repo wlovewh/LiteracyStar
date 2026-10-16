@@ -13,7 +13,8 @@
 
         <div class="topbar-center">
           <div class="timer-row">
-            <div class="timer" :class="{ 'timer-urgent': remaining <= 60 }">
+            <!-- 无整体时限的环节（如抢答题）不显示总时长，只显示单题倒计时 -->
+            <div v-if="totalTimeLimit > 0" class="timer" :class="{ 'timer-urgent': remaining <= 60 }">
               <el-icon :size="18"><Clock /></el-icon>
               <span>总时长 {{ formatDuration(remaining) }}</span>
             </div>
@@ -113,7 +114,7 @@
         <!-- 右侧：实时排行榜 -->
         <aside class="app-card exam-rank">
           <div class="rank-head">
-            <span class="rank-title">实时排行榜</span>
+            <span class="rank-title">{{ boardIsTeam ? '队伍总榜' : '个人榜' }}</span>
             <span class="rank-live" :class="{ 'is-live': rankConnected }">
               <i class="dot"></i>{{ rankConnected ? '实时' : '连接中' }}
             </span>
@@ -121,7 +122,7 @@
 
           <div class="rank-cols">
             <span class="col-rank">名次</span>
-            <span class="col-name">{{ isTeamMode ? '队伍' : '选手' }}</span>
+            <span class="col-name">{{ boardIsTeam ? '队伍' : '选手' }}</span>
             <span class="col-score">得分</span>
           </div>
 
@@ -193,9 +194,13 @@ let timer = null;
 const isTeamMode = computed(() => exam.value?.stage?.mode === 'team');
 const myUser = getUser() || {};
 
-/** 判断某一行是否是当前登录者（队伍或本人） */
+/**
+ * 判断某一行是否是当前登录者。
+ * 队伍榜按 teamId 匹配；个人榜按 studentId 匹配。
+ * 注意用榜单类型而不是环节赛制——管理员可以把个人环节的榜单切成队伍总榜。
+ */
 function isSelf(row) {
-  if (isTeamMode.value) return String(row.teamId) === String(myUser.teamId);
+  if (boardIsTeam.value) return String(row.teamId) === String(myUser.teamId);
   return String(row.studentId) === String(myUser.studentId);
 }
 
@@ -204,7 +209,7 @@ function scoreOf(row) {
   return Number(row.totalScore ?? row.score ?? 0);
 }
 
-/** 计算当前登录者在本环节的得分 */
+/** 计算当前登录者在本环节的得分（队伍榜取全队合计，个人榜取本人） */
 function refreshMyScore() {
   const me = rankList.value.find((r) => isSelf(r));
   myScore.value = me ? scoreOf(me) : 0;
@@ -220,10 +225,23 @@ function markUpdated(rows) {
   }, 1200);
 }
 
-/** 当前环节应看的榜单：团队环节看队伍总榜，个人环节看个人榜 */
+/**
+ * 当前环节答题卡旁应展示的榜单。
+ *
+ * 由管理员在环节配置中选择（rankBoard）：
+ *   auto     跟随赛制（团队环节→队伍总榜，个人环节→个人榜）
+ *   merged   队伍总榜（全队三人分数相加，一个队伍一行）
+ *   separate 个人榜（每位队员一行）
+ */
 function currentBoard() {
+  const setting = exam.value?.stage?.rankBoard || exam.value?.stage?.config?.rankBoard || 'auto';
+  if (setting === 'merged') return 'team';
+  if (setting === 'separate') return 'individual';
   return isTeamMode.value ? 'team' : 'individual';
 }
+
+/** 榜单是否展示队伍维度（决定行内是否显示队名/成员） */
+const boardIsTeam = computed(() => currentBoard() === 'team');
 
 /** 建立 SSE 连接，答题期间实时刷新排行榜 */
 function connectRankStream() {
@@ -550,6 +568,23 @@ function startTimer(seconds, anchor) {
   totalTimeLimit.value = seconds;
   remaining.value = seconds;
 
+  // 无整体时限的环节（如抢答题，总时长为 0、按单题计时）：
+  // 不启动整体倒计时，只跑单题倒计时，避免误判"答题时间已结束"而自动交卷。
+  if (!seconds || seconds <= 0) {
+    totalTimeLimit.value = 0;
+    remaining.value = 0;
+    deadlineAt = 0;
+    markQuestionStart();
+    if (timer) clearInterval(timer);
+    timer = setInterval(() => {
+      if (perQuestionLimit.value <= 0) return;
+      const qLeft = Math.max(0, Math.round((questionDeadlineAt - Date.now()) / 1000));
+      questionRemaining.value = qLeft;
+      if (qLeft <= 0) onQuestionTimeout();
+    }, 1000);
+    return;
+  }
+
   // 截止时刻以服务端记录的开考时间为锚点，而不是"页面渲染时刻 + 剩余秒数"。
   // 否则页面加载、路由跳转、接口往返的耗时会让人以为倒计时凭空少了几十秒。
   // anchor.startedAt 为服务端开考时刻，anchor.elapsed 为该时刻到现在已过的秒数。
@@ -651,12 +686,13 @@ async function load() {
     // 每题时限：抢答/限时环节由 timeConfig.perQuestionTime 指定，0 表示不限
     perQuestionLimit.value = Number(data.stage && data.stage.perQuestionTime) || 0;
 
-    // 用服务端返回的开考锚点校准截止时刻，消除页面加载耗时造成的显示误差
-    startTimer(data.availableTime || 600, {
+    // 用服务端返回的开考锚点校准截止时刻，消除页面加载耗时造成的显示误差。
+    // 注意不能写 availableTime || 600：抢答题等环节总时长为 0（无整体时限），
+    // 兜底成 600 会让界面凭空出现 10 分钟倒计时。
+    const limit = data.timeLimit !== undefined ? Number(data.timeLimit) : Number(data.availableTime) || 0;
+    startTimer(limit, {
       startedAt: data.startedAt,
-      elapsed: data.timeLimit !== undefined && data.availableTime !== undefined
-        ? Number(data.timeLimit) - Number(data.availableTime)
-        : undefined
+      elapsed: limit > 0 && data.availableTime !== undefined ? limit - Number(data.availableTime) : undefined
     });
     markQuestionStart();
   } catch (e) {

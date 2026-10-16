@@ -11,6 +11,7 @@ function check(name, cond, extra) {
   else { fail++; fails.push(name); console.log('  FAIL ' + name + (extra !== undefined ? ' :: ' + JSON.stringify(extra).slice(0, 300) : '')); }
 }
 const db = require('../src/config/db');
+const examService = require('../src/services/examService');
 
 /** 彻底删除测试赛事：先清依赖数据，再删环节与赛事本身 */
 async function purgeEvent(eid) {
@@ -362,6 +363,107 @@ async function api(method, path, { token, body } = {}) {
     const recorded = Number(sub.json.data.totalTime);
     check('交卷用时与真实经过时间一致（误差 <= 2 秒）', Math.abs(recorded - wall) <= 2,
       { recorded, wall });
+
+    await purgeEvent(eid);
+    console.log('  （已清理测试赛事 ' + eid + '）');
+  }
+
+  // ============ ⑧ 抢答题速度排名（第十二轮修复） ============
+  console.log('');
+  console.log('=== ⑧ 抢答题速度排名 ===');
+  {
+    // 旧缺陷：抢答环节每支答对的队伍都立即拿满分，
+    // speedRankingBonus 从未被调用，抢答先后顺序毫无意义。
+    const ev = await api('POST', '/events', { token: at, body: { name: 'R12抢答', description: 'auto', status: 1 } });
+    const eid = ev.json.data.id;
+    const mk = await api('POST', '/events/' + eid + '/stages', {
+      token: at,
+      body: { name: '抢答', config: {
+        mode: 'team',
+        timeConfig: { totalTime: 0, perQuestionTime: 60, speedRanking: true, speedRankingPercent: 50, speedRankingRoundUp: false },
+        questionConfig: { single: 2 },
+        scoreConfig: { singleScore: 4, wrongDeduct: true, wrongDeductScore: 2 }
+      } }
+    });
+    const sid = mk.json.data.id;
+    await api('POST', '/stages/' + sid + '/status', { token: at, body: { status: 1 } });
+
+    const teams = await db.query('SELECT * FROM teams WHERE status = 1 ORDER BY id LIMIT 3');
+    await api('PUT', '/events/' + eid + '/teams', { token: at, body: { teamIds: teams.map((t) => t.id) } });
+
+    const cfg = require('../src/config/stageConfig').normalizeConfig(
+      (await db.queryOne('SELECT config FROM stages WHERE id = ?', [sid])).config
+    );
+
+    // 三支队伍依次答对同一题
+    let answered = 0;
+    for (const t of teams) {
+      const lg = await api('POST', '/auth/student/login', { body: { studentId: t.leader_id, password: t.leader_id } });
+      const tk = lg.json.data.token;
+      const st = await api('POST', '/stages/' + sid + '/start', { token: tk });
+      if (!st.json.data || !st.json.data.questions) continue;
+      const q = st.json.data.questions[0];
+      const raw = await db.queryOne(
+        'SELECT q.answer, sp.option_map FROM questions q LEFT JOIN stage_papers sp ON sp.question_id = q.id AND sp.stage_id = ? WHERE q.id = ?',
+        [sid, q.questionId]
+      );
+      if (!raw || !raw.answer) continue;
+      const map = typeof raw.option_map === 'string' ? JSON.parse(raw.option_map) : raw.option_map;
+      const shown = String(raw.answer).split('').map((c) => (map && map[c]) || c).join('');
+      const r = await api('POST', '/stages/' + sid + '/answer', { token: tk, body: { questionId: q.questionId, answer: shown, timeSpent: 3 } });
+      if (r.json.code === 0) answered += 1;
+      await new Promise((res) => setTimeout(res, 120));
+    }
+
+    check('抢答环节可正常作答（不再一进考场就超时）', answered === teams.length, { answered, teams: teams.length });
+
+    const settled = await examService.settleSpeedRanking(sid, cfg);
+    check('速度排名结算执行', settled > 0, settled);
+
+    const after = await db.query('SELECT team_id, score_delta, submit_order FROM answers WHERE stage_id = ? ORDER BY submit_order', [sid]);
+    const scored = after.filter((r) => Number(r.score_delta) > 0);
+    const quota = Math.max(1, Math.round(after.length * 50 / 100));
+    check('只有前 50% 答对的队伍得分', scored.length === quota, { got: scored.length, expect: quota });
+    check('得分的是最先提交的队伍', scored.every((r) => Number(r.submit_order) <= quota), after.map((r) => r.submit_order));
+    check('得分队伍拿到该题满分', scored.every((r) => Number(r.score_delta) === 4), scored.map((r) => r.score_delta));
+
+    await purgeEvent(eid);
+    console.log('  （已清理测试赛事 ' + eid + '）');
+  }
+
+  // ============ ⑨ 无总时限环节不得判定超时（第十二轮修复） ============
+  console.log('');
+  console.log('=== ⑨ 无总时限环节 ===');
+  {
+    // 旧缺陷：totalTime=0 时 remainingSeconds 算出 remaining=0 -> expired=true，
+    // 学生刚点进抢答题就被拒绝作答「答题时间已结束」。
+    const ev = await api('POST', '/events', { token: at, body: { name: 'R12无时限', description: 'auto', status: 1 } });
+    const eid = ev.json.data.id;
+    const mk = await api('POST', '/events/' + eid + '/stages', {
+      token: at,
+      body: { name: '无总时限', config: {
+        mode: 'individual',
+        timeConfig: { totalTime: 0, perQuestionTime: 90 },
+        questionConfig: { single: 2 }
+      } }
+    });
+    const sid = mk.json.data.id;
+    await api('POST', '/stages/' + sid + '/status', { token: at, body: { status: 1 } });
+
+    const team = await db.queryOne('SELECT * FROM teams WHERE member1_id IS NOT NULL AND status = 1 LIMIT 1');
+    await api('PUT', '/events/' + eid + '/teams', { token: at, body: { teamIds: [team.id] } });
+
+    const stu = team.leader_id;
+    const lg = await api('POST', '/auth/student/login', { body: { studentId: stu, password: stu } });
+    const tk = lg.json.data.token;
+    const st = await api('POST', '/stages/' + sid + '/start', { token: tk });
+    check('start 返回 expired=false', st.json.data && st.json.data.expired === false, st.json.data && st.json.data.expired);
+    check('start 下发单题时限 90', st.json.data && Number(st.json.data.perQuestionTime) === 90, st.json.data && st.json.data.perQuestionTime);
+    check('start 下发总时限 0（无整体时限）', st.json.data && Number(st.json.data.timeLimit) === 0, st.json.data && st.json.data.timeLimit);
+
+    const q = st.json.data.questions[0];
+    const ans = await api('POST', '/stages/' + sid + '/answer', { token: tk, body: { questionId: q.questionId, answer: 'A', timeSpent: 3 } });
+    check('无总时限时仍可提交答案（不再提示时间已结束）', ans.json.code === 0, ans.json.message);
 
     await purgeEvent(eid);
     console.log('  （已清理测试赛事 ' + eid + '）');

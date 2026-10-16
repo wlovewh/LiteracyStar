@@ -125,6 +125,76 @@ async function api(m, p, { token, body } = {}) {
     await api('DELETE', '/chat/rooms/' + rid + '/messages', { token: tk });
   }
 
+  // ============ 第十二轮：资源分类保护 / 自定义房间码 ============
+  console.log('');
+  console.log('=== ⑩ 资源分类保护 ===');
+  {
+    const cats = await api('GET', '/resources/categories', { token: tk });
+    const first = (cats.json.data || [])[0];
+    check('存在资源分类', !!first, cats.json.data && cats.json.data.length);
+
+    if (first) {
+      const rename = await api('PUT', '/resources/categories/' + first.id, { token: tk, body: { name: '改名测试XYZ' } });
+      check('分类改名被拒绝', rename.json.code !== 0, rename.json);
+      check('改名返回 403', rename.status === 403, rename.status);
+
+      const keep = await api('PUT', '/resources/categories/' + first.id, {
+        token: tk,
+        body: { name: first.name, sortOrder: first.sort_order, status: first.status }
+      });
+      check('原名 + 改排序可正常保存', keep.json.code === 0, keep.json.message);
+
+      const del = await api('DELETE', '/resources/categories/' + first.id, { token: tk });
+      check('分类删除被拒绝', del.json.code !== 0, del.json);
+      check('删除返回 403', del.status === 403, del.status);
+    }
+
+    // 分类整体重排（上移/下移按钮走这个接口）
+    const list = (cats.json.data || []).map((c) => c.id);
+    if (list.length >= 2) {
+      const swapped = list.slice();
+      const tmp = swapped[0]; swapped[0] = swapped[1]; swapped[1] = tmp;
+      const re = await api('POST', '/resources/categories/reorder', { token: tk, body: { ids: swapped } });
+      check('分类重排接口可用', re.json.code === 0, re.json.message);
+      const after = await api('GET', '/resources/categories', { token: tk });
+      check('重排后顺序已生效', after.json.data[0].id === swapped[0], { got: after.json.data[0].id, expect: swapped[0] });
+      // 还原
+      await api('POST', '/resources/categories/reorder', { token: tk, body: { ids: list } });
+    }
+  }
+
+  console.log('');
+  console.log('=== ⑪ 自定义房间码 ===');
+  {
+    const rooms = await api('GET', '/chat/rooms', { token: tk });
+    const room = (rooms.json.data && (rooms.json.data.list || rooms.json.data))[0];
+    check('存在聊天室', !!room, rooms.json.data);
+
+    if (room) {
+      const original = room.invite_code;
+
+      const bad = await api('POST', '/chat/rooms/' + room.id + '/invite', { token: tk, body: { code: 'abc' } });
+      check('非 6 位数字被拒绝', bad.json.code !== 0, bad.json);
+
+      const custom = '777888';
+      const set = await api('POST', '/chat/rooms/' + room.id + '/invite', { token: tk, body: { code: custom } });
+      check('自定义 6 位房间码成功', set.json.code === 0 && set.json.data.inviteCode === custom, set.json);
+
+      const found = await api('GET', '/chat/rooms/by-invite?code=' + custom, { token: tk });
+      check('可用自定义码进入房间', found.json.code === 0 && found.json.data.id === room.id, found.json);
+
+      // 还原原房间码
+      await api('POST', '/chat/rooms/' + room.id + '/invite', { token: tk, body: { code: original } });
+      const restored = await api('GET', '/chat/rooms/' + room.id, { token: tk });
+      check('已还原原房间码', restored.json.data.invite_code === original, restored.json.data.invite_code);
+
+      // 随机重生成（不传 code）
+      const rand = await api('POST', '/chat/rooms/' + room.id + '/invite', { token: tk, body: {} });
+      check('不传 code 时随机重生成', rand.json.code === 0 && /^\d{6}$/.test(rand.json.data.inviteCode), rand.json);
+      await api('POST', '/chat/rooms/' + room.id + '/invite', { token: tk, body: { code: original } });
+    }
+  }
+
   console.log('');
   console.log('RESULT: ' + pass + ' passed, ' + fail + ' failed');
   if (fails.length) console.log('FAILED: ' + fails.join(' | '));

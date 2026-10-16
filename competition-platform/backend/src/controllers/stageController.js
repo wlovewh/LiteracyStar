@@ -15,6 +15,7 @@ function eventIdOf(req) {
 }
 
 exports.listByEvent = asyncHandler(async (req, res) => ok(res, await service.listByEvent(eventIdOf(req))));
+exports.options = asyncHandler(async (req, res) => ok(res, await service.listAllOptions()));
 exports.get = asyncHandler(async (req, res) => ok(res, await service.getById(req.params.id)));
 exports.create = asyncHandler(async (req, res) => ok(res, await service.create(eventIdOf(req), req.body || {}), '创建成功'));
 exports.update = asyncHandler(async (req, res) => ok(res, await service.update(req.params.id, req.body || {}), '保存成功'));

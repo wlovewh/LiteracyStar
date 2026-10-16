@@ -39,13 +39,24 @@ async function createCategory(payload = {}) {
   return db.queryOne('SELECT * FROM resource_categories WHERE id = ?', [res.insertId]);
 }
 
+/**
+ * 更新资源分类。
+ *
+ * 分类名称创建后不可修改：分类名是学生端入口的稳定标识，
+ * 改名会让已发布的导航与外部引用失效，因此这里只允许改排序与启用状态。
+ * 前端已把名称输入框置灰，此处再做一次服务端兜底。
+ */
 async function updateCategory(id, payload = {}) {
   const row = await db.queryOne('SELECT * FROM resource_categories WHERE id = ?', [id]);
   if (!row) throw new AppError('分类不存在', 404, 404);
+
+  if (payload.name !== undefined && String(payload.name).trim() !== String(row.name)) {
+    throw new AppError('资源分类名称不允许修改', 403, 403);
+  }
+
   await db.execute(
-    'UPDATE resource_categories SET name = ?, sort_order = ?, status = ? WHERE id = ?',
+    'UPDATE resource_categories SET sort_order = ?, status = ? WHERE id = ?',
     [
-      payload.name !== undefined ? String(payload.name).trim() : row.name,
       payload.sortOrder !== undefined ? Number(payload.sortOrder) || 0 : row.sort_order,
       payload.status !== undefined ? (Number(payload.status) === 1 ? 1 : 0) : row.status,
       id
@@ -54,16 +65,16 @@ async function updateCategory(id, payload = {}) {
   return db.queryOne('SELECT * FROM resource_categories WHERE id = ?', [id]);
 }
 
+/**
+ * 删除资源分类。
+ *
+ * 按需求资源分类（大类）一律不允许删除，只能改排序与启用状态，
+ * 避免误删导致其下网站被外键级联清空。
+ */
 async function removeCategory(id) {
   const row = await db.queryOne('SELECT * FROM resource_categories WHERE id = ?', [id]);
   if (!row) throw new AppError('分类不存在', 404, 404);
-  const used = await db.queryOne('SELECT COUNT(*) AS c FROM resource_sites WHERE category_id = ?', [id]);
-  // 外键为 ON DELETE CASCADE，此处显式提示避免误删
-  if (used && Number(used.c) > 0) {
-    throw new AppError('该分类下还有 ' + used.c + ' 个网站，请先移除或改分类', 409, 409);
-  }
-  await db.execute('DELETE FROM resource_categories WHERE id = ?', [id]);
-  return { id: Number(id) };
+  throw new AppError('资源分类不允许删除，如需下线请将状态改为禁用', 403, 403);
 }
 
 /** 网站列表（支持按分类、关键词筛选） */

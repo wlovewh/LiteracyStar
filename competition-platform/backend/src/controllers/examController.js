@@ -14,13 +14,22 @@ exports.wrong = asyncHandler(async (req, res) => ok(res, await service.getWrongB
 
 /**
  * 解析榜单类型。
- * board=team / board=individual 由前端切换决定；
- * 未指定时按环节赛制取默认值（团队环节默认队伍榜，个人环节默认个人榜）。
+ *
+ * 优先级：显式 query.board > 环节配置 rankBoard > 按赛制推断。
+ * 环节配置 rankBoard（管理后台可切换）：
+ *   auto     跟随赛制（团队环节→队伍榜，个人环节→个人榜）
+ *   merged   队伍总榜（全队三人分数相加，一个队伍一行）
+ *   separate 个人榜（每位队员一行）
  */
 function resolveBoard(cfg, query = {}) {
   const want = String(query.board || '').toLowerCase();
-  if (want === 'team') return { individual: false, board: 'team' };
-  if (want === 'individual') return { individual: true, board: 'individual' };
+  if (want === 'team' || want === 'merged') return { individual: false, board: 'team' };
+  if (want === 'individual' || want === 'separate') return { individual: true, board: 'individual' };
+
+  // 环节配置优先于赛制推断
+  if (cfg.rankBoard === 'merged') return { individual: false, board: 'team' };
+  if (cfg.rankBoard === 'separate') return { individual: true, board: 'individual' };
+
   const individual = cfg.mode !== 'team';
   return { individual, board: individual ? 'individual' : 'team' };
 }

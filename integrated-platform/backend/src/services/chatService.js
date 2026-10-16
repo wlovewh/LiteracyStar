@@ -18,6 +18,43 @@ async function generateInviteCode() {
   throw new AppError('邀请码生成失败，请重试', 500, 500);
 }
 
+/**
+ * 校验自定义房间码。
+ *
+ * 规则：6 位数字（与自动生成格式一致，便于学生端统一用数字键盘输入）。
+ * 由管理员/队长自定义，必须全局唯一。
+ *
+ * @param {string} code      待校验的房间码
+ * @param {number} [excludeRoomId] 排除自身的房间 id（改码时用）
+ * @returns {Promise<string>} 规范化后的房间码
+ */
+async function assertCustomCode(code, excludeRoomId) {
+  const c = String(code === undefined || code === null ? '' : code).trim();
+  if (!/^\d{6}$/.test(c)) throw new AppError('房间码必须是 6 位数字', 400);
+  const dup = excludeRoomId
+    ? await db.queryOne('SELECT id FROM chat_rooms WHERE invite_code = ? AND id <> ? LIMIT 1', [c, excludeRoomId])
+    : await db.queryOne('SELECT id FROM chat_rooms WHERE invite_code = ? LIMIT 1', [c]);
+  if (dup) throw new AppError('该房间码已被占用，请换一个', 409, 409);
+  return c;
+}
+
+/**
+ * 设置自定义房间码（同时续期 24 小时）。
+ * 不传 code 时退化为随机重新生成，与 refreshInviteCode 行为一致。
+ */
+async function setInviteCode(roomId, code) {
+  const room = await db.queryOne('SELECT * FROM chat_rooms WHERE id = ?', [roomId]);
+  if (!room) throw new AppError('聊天室不存在', 404, 404);
+
+  const finalCode = code === undefined || code === null || String(code).trim() === ''
+    ? await generateInviteCode()
+    : await assertCustomCode(code, Number(roomId));
+
+  const expires = new Date(Date.now() + config.chat.inviteCodeTtlHours * 3600 * 1000);
+  await db.execute('UPDATE chat_rooms SET invite_code = ?, invite_expires_at = ? WHERE id = ?', [finalCode, expires, roomId]);
+  return { inviteCode: finalCode, expiresAt: expires };
+}
+
 /** 确保队伍聊天室存在，返回房间记录 */
 async function ensureRoom({ teamId, name, maxMembers, retentionDays } = {}) {
   const tid = Number(teamId);
@@ -359,7 +396,7 @@ async function removePhrase(id) {
 }
 
 module.exports = {
-  ensureRoom, refreshInviteCode, findByInviteCode, getRoomById,
+  ensureRoom, refreshInviteCode, setInviteCode, assertCustomCode, findByInviteCode, getRoomById,
   recentMessages, saveMessage, submitAnswer, searchMessages,
   deleteMessage, clearRoom, purgeExpired,
   setOnline, setOffline, getOnlineMembers,

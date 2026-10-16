@@ -5,6 +5,7 @@
       <div class="toolbar">
         <el-button :icon="Upload" @click="router.push('/admin/teams/import')">批量导入</el-button>
         <el-button :icon="Download" @click="handleExport">导出</el-button>
+        <el-button :icon="RefreshLeft" :disabled="!selection.length" @click="openClearDialog(selection)">清空选中答题</el-button>
         <el-button type="danger" :icon="Delete" :disabled="!selection.length" @click="handleBatchDelete">删除选中</el-button>
         <el-button type="primary" :icon="Plus" @click="router.push('/admin/teams/new/edit')">新增队伍</el-button>
       </div>
@@ -59,7 +60,7 @@
         <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="router.push('/admin/teams/' + row.id + '/edit')">编辑</el-button>
-            <el-button link type="primary" @click="handleClearAnswers(row)">清空答题</el-button>
+            <el-button link type="primary" @click="openClearDialog([row])">清空答题</el-button>
             <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -77,11 +78,60 @@
         />
       </div>
     </div>
+
+    <!-- 清空答题数据：可选择环节，支持批量 -->
+    <el-dialog v-model="clearDialog" title="清空答题数据" width="560px">
+      <el-alert
+        type="warning"
+        :closable="false"
+        show-icon
+        title="此操作不可撤销"
+        description="将删除所选队伍的答题记录、成绩、抽题快照与排行榜缓存，清空后这些队伍可重新作答。"
+        style="margin-bottom: 16px"
+      />
+
+      <div class="clear-targets">
+        <span class="text-sub">清空对象（{{ clearTargets.length }} 支队伍）：</span>
+        <span class="clear-target-names">{{ clearTargetNames }}</span>
+      </div>
+
+      <el-form label-width="90px" style="margin-top: 16px">
+        <el-form-item label="清空范围">
+          <el-radio-group v-model="clearMode">
+            <el-radio label="stage">指定环节</el-radio>
+            <el-radio label="all">全部环节</el-radio>
+          </el-radio-group>
+        </el-form-item>
+
+        <el-form-item v-if="clearMode === 'stage'" label="选择环节">
+          <el-select
+            v-model="clearStageIds"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            placeholder="可多选，不选则无法提交"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="s in allStages"
+              :key="s.id"
+              :label="s.event_name + ' / ' + s.name"
+              :value="s.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <el-button @click="clearDialog = false">取消</el-button>
+        <el-button type="danger" :loading="clearing" @click="doClear">确认清空</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Plus, Upload, Download, Delete, Search, RefreshLeft } from '@element-plus/icons-vue';
@@ -135,28 +185,85 @@ async function handleDelete(row) {
   }
 }
 
-/**
- * 清空答题数据，允许该队伍重新作答。
- * 该操作不可撤销，需二次确认。
- */
-async function handleClearAnswers(row) {
+// ---------------- 清空答题数据（可选环节 + 批量） ----------------
+
+const clearDialog = ref(false);
+const clearing = ref(false);
+const clearTargets = ref([]);   // 待清空的队伍列表
+const clearMode = ref('stage'); // stage = 指定环节，all = 全部环节
+const clearStageIds = ref([]);  // 多选的环节 id
+const allStages = ref([]);      // 全部环节（含所属赛事名，便于区分同名环节）
+
+const clearTargetNames = computed(() =>
+  clearTargets.value.map((t) => t.name).join('、') || '-'
+);
+
+/** 打开清空弹窗：一次性载入可选环节 */
+async function openClearDialog(rows) {
+  const targets = (rows || []).filter(Boolean);
+  if (!targets.length) return;
+  clearTargets.value = targets;
+  clearMode.value = 'stage';
+  clearStageIds.value = [];
+
+  if (!allStages.value.length) {
+    try {
+      const list = await http.get('/stages/options');
+      allStages.value = Array.isArray(list) ? list : [];
+    } catch (e) {
+      /* 拦截器已提示 */
+    }
+  }
+  clearDialog.value = true;
+}
+
+/** 执行清空：按选择的范围逐支队伍清空，最后汇总提示 */
+async function doClear() {
+  const ids = clearTargets.value.map((t) => t.id);
+  if (!ids.length) return;
+
+  let stageIds = [null];
+  if (clearMode.value === 'stage') {
+    if (!clearStageIds.value.length) return ElMessage.warning('请至少选择一个环节');
+    stageIds = clearStageIds.value.slice();
+  }
+
+  const scopeText = clearMode.value === 'all'
+    ? '全部环节'
+    : '所选 ' + stageIds.length + ' 个环节';
+
   try {
     await ElMessageBox.confirm(
-      '将清空队伍「' + row.name + '」的全部答题记录、成绩与排名缓存，清空后该队伍可重新作答。此操作不可撤销，确定继续吗？',
-      '清空答题数据',
+      '将清空 ' + ids.length + ' 支队伍的「' + scopeText + '」答题数据，此操作不可撤销，确定继续吗？',
+      '再次确认',
       { type: 'warning', confirmButtonText: '确认清空', cancelButtonText: '取消' }
     );
   } catch (e) {
     return;
   }
+
+  clearing.value = true;
+  const total = { answers: 0, scores: 0, cheatCleared: 0, papers: 0 };
   try {
-    const res = await teamApi.clearAnswers(row.id);
+    for (const teamId of ids) {
+      for (const sid of stageIds) {
+        const res = await teamApi.clearAnswers(teamId, sid === null ? undefined : sid);
+        total.answers += Number(res.answers || 0);
+        total.scores += Number(res.scores || 0);
+        total.cheatCleared += Number(res.cheatCleared || 0);
+        total.papers += Number(res.papers || 0);
+      }
+    }
     ElMessage.success(
-      '已清空：答题 ' + res.answers + ' 条、成绩 ' + res.scores + ' 条、预警 ' + res.cheatCleared + ' 条'
+      '已清空 ' + ids.length + ' 支队伍：答题 ' + total.answers + ' 条、成绩 ' + total.scores +
+      ' 条、抽题快照 ' + total.papers + ' 条、预警 ' + total.cheatCleared + ' 条'
     );
+    clearDialog.value = false;
     await load();
   } catch (e) {
     /* 拦截器已提示 */
+  } finally {
+    clearing.value = false;
   }
 }
 

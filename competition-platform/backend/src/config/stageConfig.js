@@ -50,7 +50,12 @@ function defaultConfig() {
     difficultyFilter: [],
     fixedQuestionIds: [],
     allowViewAnswer: false,
-    buzzer: false
+    buzzer: false,
+    // 答题过程中「答题卡」旁展示的榜单：
+    //   auto     跟随赛制（团队环节看队伍总榜，个人环节看个人榜）
+    //   merged   固定展示队伍总榜（全队三人分数相加，一个队伍一行）
+    //   separate 固定展示个人榜（每位队员一行）
+    rankBoard: 'auto'
   };
 }
 
@@ -125,7 +130,8 @@ function normalizeConfig(raw) {
     difficultyFilter: arr(c.difficultyFilter).map((x) => Number(x)).filter((x) => Number.isFinite(x)),
     fixedQuestionIds: arr(c.fixedQuestionIds).map((x) => Number(x)).filter((x) => Number.isFinite(x)),
     allowViewAnswer: bool(c.allowViewAnswer, false),
-    buzzer: bool(c.buzzer, false)
+    buzzer: bool(c.buzzer, false),
+    rankBoard: ['auto', 'merged', 'separate'].includes(c.rankBoard) ? c.rankBoard : 'auto'
   };
 
   // 抢答类环节统一打上标记
@@ -206,7 +212,8 @@ function summarize(stage) {
     totalScore: totalPossibleScore(cfg),
     totalTime: cfg.timeConfig.totalTime,
     perQuestionTime: cfg.timeConfig.perQuestionTime,
-    allowViewAnswer: cfg.allowViewAnswer
+    allowViewAnswer: cfg.allowViewAnswer,
+    rankBoard: cfg.rankBoard
   };
 }
 

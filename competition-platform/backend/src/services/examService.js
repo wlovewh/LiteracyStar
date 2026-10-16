@@ -127,6 +127,13 @@ async function remainingSeconds(stageId, user, limitSeconds) {
     [stageId, user.teamId, user.studentId]
   );
   const limit = Number(limitSeconds);
+
+  // 总时长为 0 表示本环节没有整体时限（抢答题等按单题计时），
+  // 此时不能判定为"已超时"——否则学生一进考场就被拒绝作答。
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return { remaining: 0, elapsed: 0, expired: false, unlimited: true, startedAt: row ? row.started_at : null, submittedAt: row ? row.submitted_at : null };
+  }
+
   if (!row) return { remaining: limit, expired: false, startedAt: null };
   // mysql2 可能返回 Date 对象或字符串，统一成毫秒时间戳
   const startedAt = row.started_at instanceof Date
@@ -267,6 +274,76 @@ async function refreshLiveRank(stageId, user, cfg) {
 }
 
 /**
+ * 速度排名结算（抢答题，project.md 7.3）。
+ *
+ * 规则：「所有队伍提交后（或倒计时结束），系统按答对队伍提交时间排序，前 50% 得分」。
+ *
+ * 因此抢答环节的"答对"不能像普通环节那样立即给满分——否则每支答对的队伍都拿满分，
+ * 抢答的先后顺序毫无意义。这里在交卷/结算时统一按提交顺序重算：
+ *   - 每题取出所有答对的队伍，按 submit_order 升序排列；
+ *   - 前 percent% 的队伍记满分；
+ *   - 其余答对的队伍记 0 分（抢答慢了不得分）；
+ *   - 答错的扣分保持不变（答错扣分与速度无关）。
+ *
+ * 该函数是幂等的：重复调用只会把同一题重算成相同结果。
+ *
+ * @returns {number} 被重算的题目数
+ */
+async function settleSpeedRanking(stageId, cfg) {
+  if (!cfg.timeConfig.speedRanking) return 0;
+
+  const percent = cfg.timeConfig.speedRankingPercent;
+  const roundUp = cfg.timeConfig.speedRankingRoundUp;
+
+  // 每题取出答对的记录（含题目满分，用于计算加分基数）
+  const rows = await db.query(
+    'SELECT a.id, a.question_id, a.team_id, a.submit_order, q.type ' +
+    'FROM answers a JOIN questions q ON q.id = a.question_id ' +
+    'WHERE a.stage_id = ? AND a.is_correct = 1 ' +
+    'ORDER BY a.question_id ASC, a.submit_order ASC, a.id ASC',
+    [stageId]
+  );
+  if (!rows.length) return 0;
+
+  const byQuestion = new Map();
+  rows.forEach((r) => {
+    const qid = Number(r.question_id);
+    if (!byQuestion.has(qid)) byQuestion.set(qid, []);
+    byQuestion.get(qid).push(r);
+  });
+
+  let settled = 0;
+  for (const [qid, list] of byQuestion.entries()) {
+    const full = cfgMod.questionScore(cfg, list[0].type);
+    // 同一支队伍在同一题上可能有多条记录（团队模式多人），只取最早的一次
+    const seen = new Set();
+    const ordered = [];
+    for (const r of list) {
+      const key = String(r.team_id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      ordered.push(r);
+    }
+
+    // 注意 speedRankingBonus 读取的是 camelCase 的 teamId，
+    // 而这里拿到的是数据库行（team_id）。必须显式转换，
+    // 否则 map 的键会全部变成 undefined，导致没有任何队伍能匹配到加分。
+    const bonus = scoring.speedRankingBonus(
+      ordered.map((r) => ({ teamId: Number(r.team_id), submitOrder: Number(r.submit_order) })),
+      percent,
+      roundUp,
+      full
+    );
+    for (const r of ordered) {
+      const target = bonus.has(Number(r.team_id)) ? full : 0;
+      await db.execute('UPDATE answers SET score_delta = ? WHERE id = ?', [target, r.id]);
+    }
+    settled += 1;
+  }
+  return settled;
+}
+
+/**
  * 交卷：汇总分数、写入 stage_scores、更新排行榜。
  * 接力模式下"交卷并接力"同时计算节余时间 (project.md 7.2)。
  */
@@ -313,6 +390,14 @@ async function submitStage(stageId, user, { totalTime, pendingAnswers } = {}) {
       );
       known.add(qid);
     }
+  }
+
+  // 抢答环节：先按提交顺序结算速度排名分（前 percent% 才得分），再汇总。
+  // 必须在读 rows 之前执行，否则汇总到的是"人人满分"的旧值。
+  try {
+    await settleSpeedRanking(stageId, cfg);
+  } catch (err) {
+    logger.warn('速度排名结算失败: ' + err.message);
   }
 
   const rows = await db.query(
@@ -594,4 +679,4 @@ async function getWrongBook(stageId, user) {
   };
 }
 
-module.exports = { assertVisible, getReadyInfo, startExam, submitAnswer, submitStage, getResult, getWrongBook, myRank };
+module.exports = { assertVisible, getReadyInfo, startExam, submitAnswer, submitStage, getResult, getWrongBook, myRank, settleSpeedRanking };

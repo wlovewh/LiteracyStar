@@ -68,7 +68,8 @@ export const chatApi = {
   rooms: () => http.get('/chat/rooms'),
   room: (id) => http.get('/chat/rooms/' + id),
   updateRoom: (id, data) => http.put('/chat/rooms/' + id, data),
-  refreshInvite: (id) => http.post('/chat/rooms/' + id + '/invite'),
+  // 不传 code 时随机重生成；传入 6 位数字时为自定义房间码
+  refreshInvite: (id, code) => http.post('/chat/rooms/' + id + '/invite', code ? { code } : {}),
   messages: (id, limit) => http.get('/chat/rooms/' + id + '/messages', { params: { limit } }),
   // 聊天图片：multipart 上传，返回 { url, filename }
   uploadImage: (id, file) => {

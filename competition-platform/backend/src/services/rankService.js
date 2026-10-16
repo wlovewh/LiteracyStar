@@ -45,20 +45,26 @@ async function getRanking(stageId, { scopeKey = 'common', limit = 200 } = {}) {
     : [];
   const teamMap = new Map(teams.map((t) => [t.id, t]));
 
+  // 队伍分 = 该队全部队员之和。
+  //
+  // 之前的写法按 student_id 精确匹配单行（scoreMap.get(teamId + '|')），
+  // 但 stage_scores 的每一行都带具体学号，永远不存在 student_id 为空的行，
+  // 于是匹配不到、团队榜分数恒为 0。个人榜因为按 teamId|studentId 精确查找所以正常。
   const scores = await db.query(
-    'SELECT team_id, student_id, total_score, total_time FROM stage_scores WHERE stage_id = ?',
+    'SELECT team_id, COALESCE(SUM(total_score), 0) AS total_score, ' +
+    '       COALESCE(SUM(total_time), 0) AS total_time ' +
+    'FROM stage_scores WHERE stage_id = ? GROUP BY team_id',
     [stageId]
   );
   const scoreMap = new Map();
   scores.forEach((s) => {
-    scoreMap.set(String(s.team_id) + '|' + (s.student_id || ''), s);
+    scoreMap.set(String(s.team_id), s);
   });
 
-  // 尚未交卷时 stage_scores 为空，退化为按 answers 实时汇总，
+  // 尚未有人交卷时 stage_scores 为空，退化为按 answers 实时汇总，
   // 保证答题过程中团队榜同样可见（与个人榜口径一致）。
   const liveMap = new Map();
-  if (!scores.length) {
-    // 队伍实时分 = 全队成员答题得分之和
+  {
     const live = await db.query(
       'SELECT team_id, COALESCE(SUM(score_delta), 0) AS total_score, COALESCE(SUM(time_spent), 0) AS total_time ' +
       'FROM answers WHERE stage_id = ? GROUP BY team_id',
@@ -70,10 +76,13 @@ async function getRanking(stageId, { scopeKey = 'common', limit = 200 } = {}) {
   return desc.map((e, i) => {
     const teamId = Number(e.member);
     const team = teamMap.get(teamId) || {};
-    const row = scoreMap.get(String(teamId) + '|' + (scopeKey === 'common' ? '' : scopeKey)) || scoreMap.get(String(teamId) + '|');
+    // 已交卷取 stage_scores 汇总；未交卷取 answers 实时汇总。
+    // 注意 0 分是合法成绩，必须用「是否存在」判断而不是真值判断。
+    const row = scoreMap.get(String(teamId));
     const live = liveMap.get(String(teamId));
-    const totalScore = row ? Number(row.total_score) : (live ? Number(live.total_score) : 0);
-    const totalTime = row ? Number(row.total_time) : (live ? Number(live.total_time) : 0);
+    const src = row !== undefined ? row : live;
+    const totalScore = src ? Number(src.total_score) : 0;
+    const totalTime = src ? Number(src.total_time) : 0;
     return {
       rank: i + 1,
       teamId,
